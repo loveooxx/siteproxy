@@ -1,10 +1,7 @@
 node_modules
 dist
-src/renderer/pages/.umi
-src/renderer/pages/.umi-production
 release
-yarn-error.log
-yarn.lock
-.history
-.umirc.local.js
-.now
+/.local
+/.wrangler
+/.env.*
+/index.js

@@ -6,12 +6,19 @@
     "node": ">=22.0.0"
   },
   "scripts": {
-    "wrangler-login": "wrangler login",
-    "deploy-cf-worker": "echo 'Deploy to Cloudflare with: wrangler deploy --config wrangler.worker.jsonc' && wrangler deploy --config wrangler.worker.jsonc",
-    "deploy-cf-page": "echo 'Deploy to Cloudflare with: wrangler pages deploy' && wrangler pages deploy"
+    "build": "tsc",
+    "start": "tsx index.ts",
+    "cfdev": "wrangler dev --port 5006",
+    "cfdeploy": "wrangler deploy"
   },
-  "dependencies": { },
   "devDependencies": {
-    "wrangler": "^4.25.1"
+    "@types/node": "^25.0.10",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "wrangler": "^4.60.0"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.19.9",
+    "hono": "^4.11.5"
   }
 }

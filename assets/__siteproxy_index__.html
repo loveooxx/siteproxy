@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<!--Note: this file is served dynamically from index.ts backend script-->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Siteproxy</title>
+    <style>
+      body {
+        display: flex;
+        justify-content: center;
+        font-family: sans-serif;
+        color: #a89e84;
+        background-color: #fdf6e3;
+        transition: background-color 0.3s, color 0.3s;
+      }
+      .container {
+        width: 80%;
+      }
+      h1 {
+        display: inline-block;
+        color: #a89e84;
+      }
+      .search-box {
+        width: 100%;
+        padding: 10px;
+        margin-bottom: 40px;
+        font-size: 18px;
+        color: #a89e84;
+        border: 2px solid #a89e84;
+        background-color: #f5f5f5;
+        border-radius: 5px;
+        outline: none;
+        box-sizing: border-box;
+      }
+      a {
+        color: #a89e84;
+        text-decoration: none;
+      }
+      .warn {
+        color: red;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h1>Siteproxy (<a href="https://github.com/sagan/siteproxy" rel="noopener noreferrer">Github</a>)</h1>
+      <form id="form" method="get" action="./__siteproxy_api__">
+        <input type="hidden" name="action" value="go" />
+        <input autofocus type="search" class="search-box" name="url" placeholder="Input the url and press Enter" />
+      </form>
+      <noscript><div class="warn">JavaScript is disabled. Some websites may not load normally.</div></noscript>
+    </div>
+    <script>
+      const formEl = document.querySelector("#form");
+      const inputEl = formEl.querySelector(`*[name="url"]`);
+      formEl.addEventListener("submit", (e) => {
+        e.preventDefault();
+        let inputText = inputEl.value.trim();
+        if (!inputText) {
+          return;
+        }
+        if (!inputText.startsWith("http://") && !inputText.startsWith("https://")) {
+          inputText = "https://" + inputText;
+        }
+        let url;
+        try {
+          url = new URL(inputText);
+        } catch (e) {
+          alert(`invalid url: ${e}`);
+          return;
+        }
+        if (url.protocol !== "http:" && url.protocol !== "https:") {
+          alert(`invalid url protocol: ${url.protocol}`);
+          return;
+        }
+        location.href = `${location.pathname}${url.protocol.slice(0, -1)}/${url.href.slice(url.protocol.length + 2)}`;
+      });
+    </script>
+  </body>
+</html>
