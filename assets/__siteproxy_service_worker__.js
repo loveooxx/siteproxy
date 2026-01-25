@@ -77,6 +77,7 @@ self.addEventListener("fetch", (event) => {
       if (requestUrlObj.origin === location.origin) {
         if (
           requestUrlObj.pathname.startsWith("/__siteproxy_") ||
+          requestUrlObj.pathname.startsWith(ProxyUrl.pathname + "__siteproxy_") ||
           requestUrlObj.pathname === ProxyUrl.pathname ||
           requestUrlObj.pathname === "/robots.txt"
         ) {

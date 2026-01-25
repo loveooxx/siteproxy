@@ -41,8 +41,19 @@ const HEADER_CF_CONNECTING_IP = "cf-connecting-ip";
 const HEADER_SITEPROXY_NEWREFERER = "siteproxy-newreferer";
 const HEADER_PREFIX_SITEPROXY = "siteproxy-";
 const HEADER_CONTENT_SECURITY_POLICY = "content-security-policy";
-
 const HEADER_ACCEPT_ENCODING = "Accept-Encoding";
+const HEADER_SEC_FETCH_DEST = "sec-fetch-dest";
+const HEADER_CONTENT_DISPOSITION = "content-disposition";
+const HEADER_CACHE_CONTROL = "cache-control";
+const HEADER_CLEAR_SITE_DATA = "clear-site-data";
+
+// https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Sec-Fetch-Dest .
+// In some cases all service worker sent fetch requests will have "empty" dest value.
+const HTML_MODIFIABLE_FETCH_DEST_ = ["document", "iframe", "frame", "fencedframe", "empty"] as const;
+const JS_MODIFIABLE_FETCH_DEST = ["script", "worker", "serviceworker", "sharedworker", "empty"] as const;
+const CONTENT_DISPOSITION_ATTACHMENT = "attachment";
+const CACHE_CONTROL_NO_CACHE = "no-cache, no-store, must-revalidate";
+const CLEAR_SITE_DATA_ALL = `"*"`;
 
 const MIME_HTML = "text/html";
 const MIME_JS = "application/javascript";
@@ -363,6 +374,7 @@ function handleRedirects(
 
 async function modResponse(
   proxyUrl: URL,
+  requestHeaders: Headers,
   { proxyResponse, newResHeaders, targetProtocol, targetHost, hideHeader }: ResponseModOptions
 ) {
   // 注入的脚本内容：设置全局变量，加载 Service Worker 注册脚本
@@ -383,6 +395,7 @@ async function modResponse(
   // 修改响应体内容
   let modifiedBody: BodyInit | null | undefined = await modifyContent(
     proxyUrl,
+    requestHeaders,
     proxyResponse,
     newResHeaders,
     injectionScript,
@@ -405,10 +418,10 @@ async function modResponse(
 }
 
 function findEndOfPatternInAsciiString(str: string, pattern: string) {
-  const c = new RegExp(pattern, "i");
-  const d = c.exec(str);
-  if (d) {
-    return d.index + d[0].length;
+  const regex = new RegExp(pattern, "i");
+  const result = regex.exec(str);
+  if (result) {
+    return result.index + result[0].length;
   } else {
     return -1;
   }
@@ -421,7 +434,7 @@ function replaceWindowLocationAssignments(html: string) {
   return html;
 }
 
-const domainRegexMap = [
+const DomainRegexMap = [
   {
     domain: "google.com",
     replacements: [
@@ -433,7 +446,7 @@ const domainRegexMap = [
   },
 ];
 
-const bodyRegexMap = [
+const BodyRegexMap = [
   {
     regex: /\.URL\b/,
     replacement: ".___URL",
@@ -471,7 +484,7 @@ function isExcludedForBodyModify(host: string) {
 function modifyBody(body: any, targetHost: string, proxyFullUrl: string) {
   let bodyStr = String(body);
   // if (typeof body === "string" && body.indexOf("document.URL") !== -1) {}
-  domainRegexMap.forEach((rule) => {
+  DomainRegexMap.forEach((rule) => {
     if (targetHost.includes(rule.domain)) {
       rule.replacements.forEach((replacement) => {
         bodyStr = bodyStr.replace(new RegExp(replacement.regex, "g"), replacement.replacement);
@@ -479,7 +492,7 @@ function modifyBody(body: any, targetHost: string, proxyFullUrl: string) {
     }
   });
   if (!isExcludedForBodyModify(targetHost)) {
-    bodyRegexMap.forEach(({ regex, replacement }) => {
+    BodyRegexMap.forEach(({ regex, replacement }) => {
       bodyStr = bodyStr.replace(new RegExp(regex, "g"), replacement);
     });
   }
@@ -554,6 +567,7 @@ function handleResponseHeaders(headers: Headers) {
  */
 async function modifyContent(
   proxyUrl: URL,
+  requestHeaders: Headers,
   proxyResponse: Response,
   resHeaders: Headers,
   injectionScript: string,
@@ -565,8 +579,16 @@ async function modifyContent(
   let bodyContent: any;
 
   // 2. 获取响应头信息
-  const contentEncoding = proxyResponse.headers.get(HEADER_CONTENT_ENCODING);
-  const contentType = (proxyResponse.headers.get(HEADER_CONTENT_TYPE) || "").toLowerCase();
+  const requestSecFetchDest = requestHeaders.get(HEADER_SEC_FETCH_DEST)?.toLowerCase() || "";
+  const contentDisposition = proxyResponse.headers.get(HEADER_CONTENT_DISPOSITION)?.toLowerCase() || "";
+  const contentEncoding = proxyResponse.headers.get(HEADER_CONTENT_ENCODING)?.toLowerCase() || "";
+  const contentType = proxyResponse.headers.get(HEADER_CONTENT_TYPE)?.toLowerCase() || "";
+
+  // console.log(`mc: dest=${requestSecFetchDest}, ce=${contentDisposition}, ct=${contentType}`);
+
+  const isAttachment =
+    contentDisposition === CONTENT_DISPOSITION_ATTACHMENT ||
+    contentDisposition.startsWith(CONTENT_DISPOSITION_ATTACHMENT + ";");
   const isHtml = contentType === MIME_HTML || contentType.startsWith(MIME_HTML + ";");
   const isJs =
     contentType == MIME_JS ||
@@ -586,8 +608,14 @@ async function modifyContent(
     bodyLength = bodyContent.byteLength;
   }
 
-  // 4. 核心修改逻辑：仅针对 HTML 和 JS 且状态码正常的请求
-  if ((isHtml || isJs) && proxyResponse.status < 500) {
+  // 4. 核心修改逻辑：仅针对网页加载的 HTML 和 JS 且状态码正常的请求
+  if (
+    requestSecFetchDest &&
+    !isAttachment &&
+    proxyResponse.status < 500 &&
+    ((isHtml && (HTML_MODIFIABLE_FETCH_DEST_ as readonly string[]).includes(requestSecFetchDest)) ||
+      (isJs && (JS_MODIFIABLE_FETCH_DEST as readonly string[]).includes(requestSecFetchDest)))
+  ) {
     // 如果之前没读过 buffer (非压缩情况)，现在读取
     if (!contentEncoding) {
       bodyContent = await proxyResponse.arrayBuffer();
@@ -774,16 +802,15 @@ if (IS_NODE) {
 
   // static assets, served from "/".
   const { serveStatic } = await import("@hono/node-server/serve-static");
-  app.use("/__siteproxy_injected__.js", serveStatic({ path: __dirname + "/assets/__siteproxy_injected__.js" }));
-  app.use(
-    "/__siteproxy_service_worker__.js",
-    serveStatic({ path: __dirname + "/assets/__siteproxy_service_worker__.js" })
-  );
+  const assetPathes = ["/robots.txt", "/__siteproxy_injected__.js", "/__siteproxy_service_worker__.js"] as const;
+  for (const assetPath of assetPathes) {
+    app.use(assetPath, serveStatic({ path: __dirname + "/assets" + assetPath }));
+  }
 
   // serve proxy root html.
   app.use(ProxyUrl.pathname, serveStatic({ path: __dirname + "/assets/__siteproxy_index__.html" }));
 } else {
-  // static assets served by wrangle.json ASSETS
+  // static assets served by wrangle.json ASSETS.
 
   // serve proxy root html from CF Workers assets binding.
   app.get(ProxyUrl.pathname, async (ctx) => {
@@ -792,8 +819,14 @@ if (IS_NODE) {
 }
 
 app.get(ProxyUrl.pathname + "__siteproxy_api__", (ctx) => {
+  ctx.header(HEADER_CACHE_CONTROL, CACHE_CONTROL_NO_CACHE);
+
   const action = ctx.req.query("action") || "";
   switch (action) {
+    case "clear": {
+      ctx.header(HEADER_CLEAR_SITE_DATA, CLEAR_SITE_DATA_ALL);
+      return ctx.redirect(ProxyUrl.pathname);
+    }
     case "go": {
       // 用于 noscript 环境的首页 form 表单提交后通过后端跳转到对应页面。
       let url = ctx.req.query("url");
@@ -873,7 +906,7 @@ app.get("*", async (ctx, next, deps = {}) => {
     hideHeader: !!str2int(ctx.env.HIDE_HEADER),
   };
 
-  ctx.res = await modResponse(ProxyUrl, modificationOptions);
+  ctx.res = await modResponse(ProxyUrl, fetchHeaders, modificationOptions);
   return ctx.res;
 });
 

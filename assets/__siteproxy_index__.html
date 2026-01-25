@@ -18,7 +18,8 @@
         width: 80%;
       }
       h1 {
-        display: inline-block;
+        display: flex;
+        justify-content: space-between;
         color: #a89e84;
       }
       .search-box {
@@ -44,7 +45,12 @@
   </head>
   <body>
     <div class="container">
-      <h1>Siteproxy (<a href="https://github.com/sagan/siteproxy" rel="noopener noreferrer">Github</a>)</h1>
+      <h1>
+        <span>
+          Siteproxy v2.5.0 (<a href="https://github.com/sagan/siteproxy" rel="noopener noreferrer">Github</a>)
+        </span>
+        <a href="./__siteproxy_api__?action=clear" title="Clear cache">Clear</a>
+      </h1>
       <form id="form" method="get" action="./__siteproxy_api__">
         <input type="hidden" name="action" value="go" />
         <input autofocus type="search" class="search-box" name="url" placeholder="Input the url and press Enter" />
