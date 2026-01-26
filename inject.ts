@@ -14,6 +14,9 @@ import {
   HEADER_SITEPROXY_TARGET_HOST,
   HEADER_SITEPROXY_TARGET_PROTOCOL,
   HEADER_SITEPROXY_WINDOW_LOCATION_PATHNAME,
+  VAR_PROXY_URL,
+  VAR_PROXY_REAL_PROTOCOL,
+  VAR_PROXY_REAL_HOST,
   Marks,
   markProto,
   restoreUrl,
@@ -101,8 +104,8 @@ interface ProxyCurLocationMsg {
   const originalWindowOpen = window.open;
   window.open = function (url?: string | URL, target?: string, features?: string): WindowProxy | null {
     // Convert URL to proxy URL before opening
-    let urlString = url ? url.toString() : "";
-    let proxiedUrl = addProxyPrefix(urlString);
+    const urlString = url ? url.toString() : "";
+    const proxiedUrl = addProxyPrefix(urlString);
     return originalWindowOpen.call(window, proxiedUrl, target, features);
   };
 
@@ -132,7 +135,7 @@ interface ProxyCurLocationMsg {
     },
     set: function (url: string) {
       // Add proxy prefix when setting
-      let proxiedUrl = addProxyPrefix(url);
+      const proxiedUrl = addProxyPrefix(url);
       // document.URL is read-only in standard DOM, this might not work in strict envs
       // but mimics the original script's intent.
       // We use type assertion to bypass TS readonly check here if strictly needed,
@@ -222,30 +225,23 @@ interface ProxyCurLocationMsg {
     }
 
     get hostname(): string {
-      let host = getHostFromProxyPrefixedURL(this.originalLocation.href);
-      const colonIndex = host.indexOf(":");
-      if (colonIndex !== -1) {
-        host = host.slice(0, colonIndex);
-      }
-      return host;
+      const host = getHostFromProxyPrefixedURL(this.originalLocation.href);
+      const i = host.indexOf(":");
+      return i !== -1 ? host.slice(0, i) : host;
     }
     set hostname(val: string) {}
 
     get port(): string {
       const host = getHostFromProxyPrefixedURL(this.originalLocation.href);
-      const colonIndex = host.indexOf(":");
-      let port = "";
-      if (colonIndex !== -1) {
-        port = host.slice(colonIndex + 1);
-      }
-      return port;
+      const i = host.indexOf(":");
+      return i !== -1 ? host.slice(i + 1) : "";
     }
     set port(val: string) {}
   }
 
   // Initialize LocationProxy and overwrite window.___location
   (function () {
-    let locationProxyInstance = new LocationProxy(window.location);
+    const locationProxyInstance = new LocationProxy(window.location);
     window.___location = locationProxyInstance;
     document.___location = window.___location;
 
@@ -281,8 +277,8 @@ interface ProxyCurLocationMsg {
       if (url.startsWith(ProxyUrl.pathname)) {
         url = url.slice(ProxyUrl.pathname.length);
       }
-      const restoredUrl = restoreUrl(url);
-      if (restoredUrl !== url) {
+      const [restoredUrl, found] = restoreUrl(url);
+      if (found) {
         return restoredUrl;
       } else {
         return realProtocol + "://" + realHost + url;
@@ -306,7 +302,7 @@ interface ProxyCurLocationMsg {
     // Inject custom Headers
     if (input instanceof Request) {
       const req = input;
-      let headers = new Headers(req.headers);
+      const headers = new Headers(req.headers);
       headers.set(HEADER_SITEPROXY_TARGET_PROTOCOL, ProxyRealProtocol);
       headers.set(HEADER_SITEPROXY_TARGET_HOST, ProxyRealHost);
 
@@ -317,7 +313,7 @@ interface ProxyCurLocationMsg {
       // Reconstruct Request with new headers
       input = new Request(req, { headers: headers });
     } else {
-      let options = init || {};
+      const options = init || {};
       options.headers = new Headers(options.headers || {});
       options.headers.set(HEADER_SITEPROXY_TARGET_PROTOCOL, ProxyRealProtocol);
       options.headers.set(HEADER_SITEPROXY_TARGET_HOST, ProxyRealHost);
@@ -357,30 +353,28 @@ interface ProxyCurLocationMsg {
     if (!url || !url.startsWith(ProxyUrl.href)) {
       return "";
     }
-    let urlObj: URL | null = null;
     url = url.slice(ProxyUrl.href.length);
     for (const mark of Marks) {
       if (url.startsWith(mark)) {
-        urlObj = new URL(markProto(mark) + "://" + url.slice(mark.length));
-        break;
+        const urlObj = new URL(markProto(mark) + "://" + url.slice(mark.length));
+        return urlObj.pathname;
       }
     }
-    return urlObj?.pathname || "";
+    return "";
   }
 
   function getHostFromProxyPrefixedURL(url: string): string {
     if (!url || !url.startsWith(ProxyUrl.href)) {
       return "";
     }
-    let urlObj: URL | null = null;
     url = url.slice(ProxyUrl.href.length);
     for (const mark of Marks) {
       if (url.startsWith(mark)) {
-        urlObj = new URL(markProto(mark) + "://" + url.slice(mark.length));
-        break;
+        const urlObj = new URL(markProto(mark) + "://" + url.slice(mark.length));
+        return urlObj.host;
       }
     }
-    return urlObj?.host || "";
+    return "";
   }
 
   function setProtocolFromProxyPrefixedURL(currentUrl: string, newProtocol: string): string {
@@ -417,8 +411,8 @@ interface ProxyCurLocationMsg {
     const urlWithoutOrigin = url.slice(ProxyUrl.origin.length);
     if (urlWithoutOrigin.startsWith(ProxyUrl.pathname)) {
       const relativePath = urlWithoutOrigin.slice(ProxyUrl.pathname.length);
-      const restoredUrl = restoreUrl(relativePath);
-      if (restoredUrl.startsWith("https://") || restoredUrl.startsWith("http://")) {
+      const [restoredUrl, found] = restoreUrl(relativePath);
+      if (found) {
         return restoredUrl;
       }
     }
@@ -463,15 +457,10 @@ interface ProxyCurLocationMsg {
 
     // Handle absolute paths inside string (e.g., in regex replacement)
     const regexMap: Record<string, string> = { "()(https?://|//)([^\\s\"']+)": "" };
-    for (let regexStr in regexMap) {
-      let regex = new RegExp(regexStr, "gi");
+    for (const regexStr in regexMap) {
+      const regex = new RegExp(regexStr, "gi");
       url = url.replace(regex, (match, p1, protocolPart, hostPart, offset, string) => {
-        let protocol: string;
-        if (protocolPart === "//") {
-          protocol = "https";
-        } else {
-          protocol = protocolPart.replace("://", "").toLowerCase();
-        }
+        const protocol = protocolPart === "//" ? "https" : protocolPart.replace("://", "").toLowerCase();
         return ProxyUrl.href + protocol + "://" + hostPart;
       });
     }
@@ -482,7 +471,7 @@ interface ProxyCurLocationMsg {
     }
 
     // Construct full proxy URL
-    let defaultProxyBase = ProxyUrl.href + ProxyRealProtocol + "://" + ProxyRealHost;
+    const defaultProxyBase = ProxyUrl.href + ProxyRealProtocol + "://" + ProxyRealHost;
 
     if (url.startsWith("//")) {
       url = ProxyUrl.href + "https://" + url.slice(2);
@@ -515,9 +504,9 @@ interface ProxyCurLocationMsg {
           const target = mutation.target as Element;
           if (!mutation.attributeName) break;
 
-          let attrValue = target.getAttribute(mutation.attributeName);
+          const attrValue = target.getAttribute(mutation.attributeName);
           if (attrValue !== null && monitoredAttributes.includes(mutation.attributeName)) {
-            let proxiedValue = addProxyPrefix(attrValue);
+            const proxiedValue = addProxyPrefix(attrValue);
 
             // Remove integrity attribute
             if (target.tagName.toLowerCase() === "script" && target.hasAttribute("integrity")) {
@@ -553,8 +542,8 @@ interface ProxyCurLocationMsg {
 
       monitoredAttributes.forEach((attr) => {
         if (element.hasAttribute(attr)) {
-          let val = element.getAttribute(attr);
-          let proxiedVal = addProxyPrefix(val);
+          const val = element.getAttribute(attr);
+          const proxiedVal = addProxyPrefix(val);
 
           if (element.tagName.toLowerCase() === "script" && element.hasAttribute("integrity")) {
             element.removeAttribute("integrity");
@@ -576,7 +565,7 @@ interface ProxyCurLocationMsg {
             if (doc && !doc._observerSet) {
               doc._observerSet = true;
               traverseAndRewriteNode(doc); // doc acts as a Node here
-              let iframeObserver = new MutationObserver(handleMutationCallback);
+              const iframeObserver = new MutationObserver(handleMutationCallback);
               iframeObserver.observe(doc.documentElement, observerConfig);
             }
           });
@@ -590,7 +579,7 @@ interface ProxyCurLocationMsg {
         if (doc && !doc._observerSet) {
           doc._observerSet = true;
           traverseAndRewriteNode(doc);
-          let iframeObserver = new MutationObserver(handleMutationCallback);
+          const iframeObserver = new MutationObserver(handleMutationCallback);
           iframeObserver.observe(doc.documentElement, observerConfig);
         }
       }
@@ -628,6 +617,14 @@ interface ProxyCurLocationMsg {
     });
 
     const form = document.createElement("form");
+    form.onsubmit = function (e) {
+      e.preventDefault();
+      const targetUrl = fixInputUrl(input.value);
+      if (!targetUrl) {
+        return;
+      }
+      window.location.href = addProxyPrefix(targetUrl);
+    };
     Object.assign(form.style, {
       display: "flex",
       width: "100%",
@@ -636,6 +633,7 @@ interface ProxyCurLocationMsg {
 
     // 1. Home Button
     const hpBtn = document.createElement("button");
+    hpBtn.type = "button";
     hpBtn.innerText = "Home";
     Object.assign(hpBtn.style, {
       height: "30px",
@@ -680,6 +678,7 @@ interface ProxyCurLocationMsg {
 
     // 3. Submit (Go) Button
     const submitBtn = document.createElement("button");
+    submitBtn.type = "submit";
     submitBtn.innerText = "Go";
     Object.assign(submitBtn.style, {
       height: "30px",
@@ -720,16 +719,6 @@ interface ProxyCurLocationMsg {
     };
     closeBtn.onmouseout = function () {
       closeBtn.style.color = "#aaa";
-    };
-
-    // --- Event Handling ---
-    form.onsubmit = function (e: SubmitEvent) {
-      e.preventDefault();
-      let targetUrl = fixInputUrl(input.value);
-      if (!targetUrl) {
-        return;
-      }
-      window.location.href = addProxyPrefix(targetUrl);
     };
 
     closeBtn.onclick = function (e: MouseEvent) {
@@ -804,7 +793,7 @@ interface ProxyCurLocationMsg {
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.getRegistrations().then(function (registrations) {
       const isRegistered = registrations.some(function (reg) {
-        let isActive = reg.active && reg.active.scriptURL.includes(PREFIX + "sw.js");
+        const isActive = reg.active && reg.active.scriptURL.includes(PREFIX + "sw.js");
         if (isActive) {
           console.log("!!! proxy service worker already registered.");
           window.proxy_worker_registration = reg;
@@ -819,9 +808,9 @@ interface ProxyCurLocationMsg {
             return;
           }
           const params = new URLSearchParams({
-            proxy_url: ProxyUrl.href,
-            proxy_real_protocol: ProxyRealProtocol,
-            proxy_real_host: ProxyRealHost,
+            [VAR_PROXY_URL]: ProxyUrl.href,
+            [VAR_PROXY_REAL_PROTOCOL]: ProxyRealProtocol,
+            [VAR_PROXY_REAL_HOST]: ProxyRealHost,
           });
 
           navigator.serviceWorker.register(`/${PREFIX}sw.js?${params.toString()}`).then(
@@ -877,8 +866,7 @@ interface ProxyCurLocationMsg {
     const location = window.___location as LocationProxy;
     const { pathname, search, hash, href } = location;
     if (window.self === window.top && pathname === "/" && search === "" && hash === "" && !href.endsWith("/")) {
-      let newHref = href + "/";
-      location.href = newHref;
+      location.href = href + "/";
     }
   }
 

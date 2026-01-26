@@ -1,6 +1,6 @@
 // Backend main script file for both Cloudflare Workers and node.js env.
 
-import { type HonoRequest, Hono } from "hono";
+import { Hono } from "hono";
 import {
   PREFIX,
   HEADER_ACCEPT_ENCODING,
@@ -11,10 +11,13 @@ import {
   HEADER_CONTENT_ENCODING,
   HEADER_CONTENT_LENGTH,
   HEADER_CONTENT_SECURITY_POLICY,
+  HEADER_CONTENT_SECURITY_POLICY_REPORT_ONLY,
   HEADER_CONTENT_TYPE,
   HEADER_COOKIE,
   HEADER_HOST,
   HEADER_LOCATION,
+  HEADER_REFERER,
+  HEADER_ORIGIN,
   HEADER_PREFIX_SITEPROXY,
   HEADER_SEC_FETCH_DEST,
   HEADER_SET_COOKIE,
@@ -28,9 +31,8 @@ import {
   Marks,
   markProto,
   restoreUrl,
-  HEADER_REFERER,
-  HEADER_ORIGIN,
   fixInputUrl,
+  escapeRegExp,
 } from "./lib";
 
 const IS_NODE = typeof globalThis.addEventListener === "undefined";
@@ -50,7 +52,7 @@ ProxyUrl.hash = "";
 ProxyUrl.username = "";
 ProxyUrl.password = "";
 if (ProxyUrl.pathname === "" || ProxyUrl.pathname === "/") {
-  ProxyUrl.pathname = "/"; // "/default/"
+  ProxyUrl.pathname = "/";
 }
 
 const FilterUrlList = ["telegram.org/service_worker.js", "elcomercio.pe", "exchangebank.com"] as const;
@@ -91,15 +93,6 @@ interface ResponseModOptions {
   targetProtocol: string;
   targetHost: string;
   hideHeader: boolean;
-}
-
-/**
- * Location header modify
- */
-interface ResponseLocationHeaderModOptions {
-  location_value: string;
-  targetProtocol: string;
-  targetHost: string;
 }
 
 let compressFunc: CompressFunc | undefined;
@@ -168,10 +161,16 @@ function removeSiteproxyHeaders(headers: Headers) {
   });
 }
 
+function rewriteSearchQuery(proxyUrl: URL, search: string) {
+  // Replaces absolute proxy URLs in query params back to standard URLs
+  // e.g. ?url=http://proxy/prefix/https/target -> ?url=https://target
+  return search.replace(new RegExp(escapeRegExp(proxyUrl.href) + "(https?)(?:://|/)([^/]+)"), "$1://$2");
+}
+
 /**
  * 解析路径，一次性提取协议、主机和真实路径
  * @param pathStr 去除 path prefix 前缀后的 pathname. Supported forms:
- * "https/google.com/search", "https://google.com/search", "google.com/search".
+ * "https/google.com/search", "https://google.com/search".
  * @param proxyUrl 代理本身的 URL 对象 (用于 CustomPathRewrite 修复逻辑)
  * @returns [protocol, host, realPath]
  */
@@ -182,7 +181,7 @@ function pathname2Target(
   // group 1: optional protocol, http | https .
   // group 2: host.
   // group 3: pathname.
-  const regex = /^(?:(http|https)(?::\/\/|\/))([-a-z0-9A-Z.]+)(\/.*)?$/;
+  const regex = /^(?:(https?)(?::\/\/|\/))([-a-z0-9A-Z.:]+)(\/.*)?$/;
   const matchResult = pathStr.match(regex);
   if (!matchResult) {
     return ["", "", ""];
@@ -203,12 +202,20 @@ function CustomPathRewrite(proxyUrl: URL, path: string): string {
     const checkMark = proxyUrl.href + mark;
     const markIndex = path.indexOf(checkMark);
     if (markIndex !== -1) {
-      let afterPrefix = path.slice(markIndex + checkMark.length);
+      const afterPrefix = path.slice(markIndex + checkMark.length);
       path = path.slice(0, markIndex) + markProto(mark) + "://" + afterPrefix;
       return path;
     }
   }
   return path;
+}
+
+/**
+ * Return "Set-Cookie" header of deleting a cookie.
+ */
+function deleteCookieHeader(name: string) {
+  // 设置过期时间为 1970 年，强制浏览器删除
+  return name + "=; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=/; Secure; HttpOnly";
 }
 
 /**
@@ -223,78 +230,64 @@ function processHeaders(
   originalHeaders: Headers,
   targetProtocol: string,
   targetHost: string
-): Record<string, string> {
-  // 2. 将 Headers 对象转换为普通 JS 对象 (因为 Headers 对象通常不可变或操作不便)
-  let headers: Record<string, string> = {};
+): [targetReqHeaders: Headers, directResponse?: Response] {
+  const targetReqHeaders = new Headers();
   originalHeaders.forEach((value, key) => {
-    headers[key] = value;
-  });
-
-  // 3. --- Cookie 大小安全检查 ---
-  // 查找 Cookie 头 (Header key 是不区分大小写的)
-  let cookieStr = "";
-  for (const key in headers) {
-    if (key.toLowerCase() === HEADER_COOKIE) {
-      cookieStr = headers[key];
-      break;
+    key = key.toLowerCase();
+    if (key.startsWith(HEADER_PREFIX_SITEPROXY) || key === HEADER_X_FORWARDED_FOR || key === HEADER_CF_CONNECTING_IP) {
+      return;
     }
-  }
+    targetReqHeaders.append(key, value);
+  });
+  targetReqHeaders.set(HEADER_HOST, targetHost);
+  targetReqHeaders.set(HEADER_ACCEPT_ENCODING, "gzip"); // 强制 gzip 以便后续处理
 
+  let directResponse: Response | undefined;
+  const cookieStr = targetReqHeaders.get(HEADER_COOKIE);
+  // --- Cookie 大小安全检查 ---
   if (cookieStr) {
     // 计算 Cookie 字节长度 (兼容 Node 和 Cloudflare Workers 环境)
     const byteLen = IS_NODE ? Buffer.byteLength(cookieStr) : new TextEncoder().encode(cookieStr).byteLength;
-
     // 如果 Cookie 超过 8000 字节，可能会导致服务器拒绝服务 (HTTP 431)
     // 这里的逻辑是：抛出一个特定错误，在外层捕获后，返回 Set-Cookie 指令让浏览器删除这些 Cookie
     if (byteLen > 8000) {
       const cookies = cookieStr.split(";").map((c) => c.trim().split("=", 2));
-
+      const directResponseHeaders = new Headers();
       // 生成过期指令，清除除了代理自身配置 (proxy_real_) 以外的所有 Cookie
-      const expireCookiesList = cookies
-        .map(([name]) => {
-          if (!name?.startsWith("proxy_real_")) {
-            // 设置过期时间为 1970 年，强制浏览器删除
-            return name + "=; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=/; Secure; HttpOnly";
-          }
-          return null;
-        })
-        .filter(Boolean);
-
-      const errorObj = {
-        type: "header_too_large",
-        expireCookies: expireCookiesList,
-      };
-      throw errorObj; // 抛出异常，中断后续请求
+      cookies.forEach(([name]) => {
+        directResponseHeaders.append(HEADER_SET_COOKIE, deleteCookieHeader(name));
+      });
+      directResponse = new Response(null, { headers: directResponseHeaders, status: 431 });
     }
   }
 
   // 4. --- Referer 和 Origin 重写逻辑 ---
   // 这一步非常关键，防止目标网站检测到防盗链
-  if (headers[HEADER_SITEPROXY_NEWREFERER]) {
+  if (targetReqHeaders.has(HEADER_SITEPROXY_NEWREFERER)) {
     // A. 优先使用 Service Worker 或前端脚本指定的自定义 Referer
-    headers[HEADER_REFERER] = headers[HEADER_SITEPROXY_NEWREFERER];
+    targetReqHeaders.set(HEADER_REFERER, targetReqHeaders.get(HEADER_SITEPROXY_NEWREFERER)!);
     try {
-      const refUrl = new URL(headers[HEADER_SITEPROXY_NEWREFERER]);
-      headers[HEADER_ORIGIN] = refUrl.origin;
+      const refUrl = new URL(targetReqHeaders.get(HEADER_SITEPROXY_NEWREFERER)!);
+      targetReqHeaders.set(HEADER_ORIGIN, refUrl.origin);
     } catch (e) {
       // 忽略 URL 解析错误
     }
-  } else if (headers[HEADER_REFERER]?.startsWith(proxyUrl.href)) {
+  } else if (targetReqHeaders.get(HEADER_REFERER)?.startsWith(proxyUrl.href)) {
     // Restore referer:
     // "https://proxy.com/token/https/www.google.com/foo" => "https/www.google.com/foo"
-    headers[HEADER_REFERER] = restoreUrl(headers[HEADER_REFERER].slice(proxyUrl.href.length));
-    headers.HEADER_ORIGIN = targetProtocol + "://" + targetHost;
-  } else if (headers[HEADER_ORIGIN] === proxyUrl.origin) {
+    const [realUrl] = restoreUrl(targetReqHeaders.get(HEADER_REFERER)!.slice(proxyUrl.href.length));
+    targetReqHeaders.set(HEADER_REFERER, realUrl);
+    targetReqHeaders.set(HEADER_ORIGIN, targetProtocol + "://" + targetHost);
+  } else if (targetReqHeaders.get(HEADER_ORIGIN) === proxyUrl.origin) {
     // C. 如果 Origin 是代理服务器的域名 (常见于 AJAX/CORS 请求)，修正为目标域
-    headers[HEADER_ORIGIN] = targetProtocol + "://" + targetHost;
+    targetReqHeaders.set(HEADER_ORIGIN, targetProtocol + "://" + targetHost);
   }
-
-  return headers;
+  return [targetReqHeaders, directResponse];
 }
 
 function location_regex_replace(proxyUrl: URL, location: string): string {
   const rules: Record<string, string> = {
-    "^(http[s]?)://([-a-zA-Z0-9.]+)": proxyUrl.href + "$1://$2",
+    "^(http[s]?)://([-a-zA-Z0-9.:]+)": proxyUrl.href + "$1://$2",
   };
   for (const regexStr in rules) {
     const regex = new RegExp(regexStr, "g");
@@ -436,9 +429,9 @@ function modifyBody(body: any, targetHost: string, proxyFullUrl: string) {
 }
 
 function invalidCookie(cookie: string): boolean {
-  let i = cookie.indexOf(";");
+  const i = cookie.indexOf(";");
   if (i !== -1) {
-    let value = cookie.slice(0, i);
+    const value = cookie.slice(0, i);
     if (value.indexOf("=") === -1) {
       return true;
     }
@@ -471,8 +464,8 @@ function cookieModify(cookie: string, replaceDomain: string) {
 }
 
 function handleResponseHeaders(headers: Headers) {
-  let newHeaders = new Headers();
-  let setCookieHeaders: string[] = [];
+  const newHeaders = new Headers();
+  const setCookieHeaders: string[] = [];
   headers.forEach((value, name) => {
     if (name.toLowerCase() !== HEADER_SET_COOKIE) {
       newHeaders.set(name, value);
@@ -485,11 +478,13 @@ function handleResponseHeaders(headers: Headers) {
       if (invalidCookie(str)) {
         return;
       }
-      let newHeader = cookieModify(str, ProxyUrl.hostname);
+      const newHeader = cookieModify(str, ProxyUrl.hostname);
       newHeaders.append(HEADER_SET_COOKIE, newHeader);
     });
   });
   newHeaders.delete(HEADER_CONTENT_SECURITY_POLICY);
+  newHeaders.delete(HEADER_CONTENT_SECURITY_POLICY_REPORT_ONLY);
+  newHeaders.delete(HEADER_X_FRAME_OPTIONS);
   return newHeaders;
 }
 
@@ -572,7 +567,7 @@ async function modifyContent(
     const rawString = isoDecoder.decode(bodyContent);
 
     // 尝试从 meta 标签获取 charset
-    let metaMatch = rawString.match(/<meta\s+[^>]*charset\s*=\s*["']?([0-9a-zA-Z\-]+)["']?[^>]*>/i);
+    const metaMatch = rawString.match(/<meta\s+[^>]*charset\s*=\s*["']?([0-9a-zA-Z\-]+)["']?[^>]*>/i);
     if (isHtml && metaMatch && metaMatch[1]) {
       charset = metaMatch[1].toLowerCase();
     } else {
@@ -618,14 +613,14 @@ async function modifyContent(
     // [分支 A] GBK 编码且找到了注入位置：直接二进制拼接
     if (isHtml && charset === "gbk" && headTagPos !== -1) {
       const encoder = new TextEncoder(); // 注入的脚本默认是 UTF-8，但在现代浏览器混排通常能工作，或者这里假设注入脚本纯 ASCII
-      let scriptBuffer = encoder.encode(injectionScript);
+      const scriptBuffer = encoder.encode(injectionScript);
 
-      let totalLength = bodyContent.byteLength + scriptBuffer.byteLength;
-      let newBuffer = new ArrayBuffer(totalLength);
-      let newUint8 = new Uint8Array(newBuffer);
+      const totalLength = bodyContent.byteLength + scriptBuffer.byteLength;
+      const newBuffer = new ArrayBuffer(totalLength);
+      const newUint8 = new Uint8Array(newBuffer);
 
-      let originalUint8 = new Uint8Array(bodyContent);
-      let scriptUint8 = new Uint8Array(scriptBuffer);
+      const originalUint8 = new Uint8Array(bodyContent);
+      const scriptUint8 = new Uint8Array(scriptBuffer);
 
       // 拼接: [Header部分] + [注入脚本] + [剩余Body]
       newUint8.set(originalUint8.subarray(0, headTagPos), 0);
@@ -675,17 +670,6 @@ async function modifyContent(
     } else {
       // console.log("Debug: Excluded from body modification");
     }
-
-    // 5. 设置 Cookie 用于客户端脚本识别
-    if (targetProtocol) {
-      const cookieProtocol = "proxy_real_protocol=" + targetProtocol + "; Path=/; HttpOnly";
-      const cookieHost = "proxy_real_host=" + targetHost + "; Path=/; HttpOnly";
-      resHeaders.append(HEADER_SET_COOKIE, cookieProtocol);
-      resHeaders.append(HEADER_SET_COOKIE, cookieHost);
-      // 删除 X-Frame-Options 以允许在 iframe 中加载（如果代理是用 iframe 实现的）
-      resHeaders.delete(HEADER_X_FRAME_OPTIONS);
-    }
-
     finalBody = bodyContent;
   }
 
@@ -766,7 +750,7 @@ app.get(ProxyUrl.pathname + PREFIX + "api", (ctx) => {
     }
     case "go": {
       // 用于 noscript 环境的首页 form 表单提交后通过后端跳转到对应页面。
-      let url = fixInputUrl(ctx.req.query("url"));
+      const url = fixInputUrl(ctx.req.query("url"));
       if (url) {
         try {
           const targetUrl = new URL(url);
@@ -781,7 +765,7 @@ app.get(ProxyUrl.pathname + PREFIX + "api", (ctx) => {
 });
 
 app.get("*", async (ctx, next, deps = {}) => {
-  let { req } = ctx;
+  const { req } = ctx;
 
   // 1. 检查是否在过滤名单中
   if (FilterUrlList.some((item) => req.url.includes(item))) {
@@ -789,50 +773,42 @@ app.get("*", async (ctx, next, deps = {}) => {
   }
 
   // 2. 解析请求路径
-  let urlObj = new URL(req.url);
+  const urlObj = new URL(req.url);
   if (!urlObj.pathname.startsWith(ProxyUrl.pathname)) {
     return next();
   }
 
   // 3. 从 Path 中提取真实的目标 Protocol 和 Host
   // 例如: /default/https/google.com/search -> protocol: https, host: google.com
-  let pathAfterToken = urlObj.pathname.slice(ProxyUrl.pathname.length);
-  let [targetProtocol, targetHost, targetPathname] = pathname2Target(pathAfterToken, ProxyUrl);
+  const pathAfterToken = urlObj.pathname.slice(ProxyUrl.pathname.length);
+  const [targetProtocol, targetHost, targetPathname] = pathname2Target(pathAfterToken, ProxyUrl);
 
   if (targetProtocol !== "http" && targetProtocol !== "https") {
     return next();
   }
 
-  const targetFullUrl = targetProtocol + "://" + targetHost + targetPathname + urlObj.search;
-  const targetHeaders = processHeaders(ProxyUrl, req.raw.headers, targetProtocol, targetHost);
-
-  // 转换为 Fetch 需要的 Headers 对象
-  const reqHeaders = new Headers();
-  for (const key in targetHeaders) {
-    reqHeaders.append(key, targetHeaders[key]);
+  const targetSearch = rewriteSearchQuery(ProxyUrl, urlObj.search);
+  const targetFullUrl = targetProtocol + "://" + targetHost + targetPathname + targetSearch;
+  const [targetReqHeaders, directResponse] = processHeaders(ProxyUrl, req.raw.headers, targetProtocol, targetHost);
+  if (directResponse) {
+    return directResponse;
   }
-
   const requestBody = req.method !== "GET" ? await req.arrayBuffer() : undefined;
 
-  // 6. 清理代理特有的 Headers
-  removeSiteproxyHeaders(reqHeaders);
-  reqHeaders.set(HEADER_HOST, targetHost);
-  reqHeaders.set(HEADER_ACCEPT_ENCODING, "gzip"); // 强制 gzip 以便后续处理
-
-  // 7. 发起真实请求 (Fetch)
+  // console.log("Fetch", targetFullUrl);
   let proxyResponse = await fetch(targetFullUrl, {
     method: req.method,
-    headers: reqHeaders,
+    headers: targetReqHeaders,
     body: requestBody,
     redirect: "manual",
   });
 
-  // 8. 处理响应 (Cookie重写, 内容注入等)
+  // 处理响应 (Cookie重写, 内容注入等)
   // responseModification 会处理解压缩、字符集解码、HTML注入脚本等
   const resHeaders = handleResponseHeaders(proxyResponse.headers);
 
   const modificationOptions: ResponseModOptions = {
-    reqHeaders,
+    reqHeaders: targetReqHeaders,
     resHeaders,
     targetProtocol: targetProtocol,
     targetHost: targetHost,

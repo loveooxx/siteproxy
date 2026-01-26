@@ -31,7 +31,8 @@ export default defineConfig({
       external: [...builtinModules, ...builtinModules.map((m) => `node:${m}`)],
       output: {
         entryFileNames: PREFIX + "inject.js",
-        format: "es",
+        format: "iife",
+        name: PREFIX + "inject",
         inlineDynamicImports: true, // Forces everything into one file!
       },
     },

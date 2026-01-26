@@ -4,12 +4,14 @@ import {
   HEADER_SITEPROXY_REAL_REFERER,
   HEADER_SITEPROXY_TARGET_HOST,
   HEADER_SITEPROXY_TARGET_PROTOCOL,
-  Marks,
-  markProto,
+  VAR_PROXY_URL,
+  VAR_PROXY_REAL_PROTOCOL,
+  VAR_PROXY_REAL_HOST,
   escapeRegExp,
+  restoreUrl,
 } from "./lib";
 
-declare var self: ServiceWorkerGlobalScope;
+declare const self: ServiceWorkerGlobalScope;
 
 declare global {
   interface ServiceWorkerGlobalScope {
@@ -20,13 +22,13 @@ declare global {
 
 const params = new URLSearchParams(location.search);
 
-const proxy_url = params.get("proxy_url");
+const proxy_url = params.get(VAR_PROXY_URL);
 if (!proxy_url) {
   throw new Error("empty proxy_url");
 }
 const ProxyUrl = new URL(proxy_url);
-const proxy_real_protocol = params.get("proxy_real_protocol") || "";
-const proxy_real_host = params.get("proxy_real_host") || "";
+const proxy_real_protocol = params.get(VAR_PROXY_REAL_PROTOCOL) || "";
+const proxy_real_host = params.get(VAR_PROXY_REAL_HOST) || "";
 
 console.log("Service Worker", ProxyUrl.href, proxy_real_protocol, proxy_real_host);
 
@@ -36,7 +38,7 @@ const pathHostCache: Record<string, any> = {};
 // --- 定时任务：清理过期的缓存 ---
 function cleanCache() {
   const now = Date.now();
-  for (let path in pathHostCache) {
+  for (const path in pathHostCache) {
     if (now > pathHostCache[path].lasttime + 30000) {
       // 30秒过期
       delete pathHostCache[path];
@@ -92,43 +94,37 @@ self.addEventListener("activate", (event) => {
 self.addEventListener("fetch", (event) => {
   event.respondWith(
     (async () => {
-      let requestUrlObj = new URL(event.request.url);
-
+      let targetUrl = new URL(event.request.url);
       let targetProtocol = "";
       let targetHost = "";
-      let searchParams = rewriteUrlsInContent(requestUrlObj.search);
-
-      if (requestUrlObj.origin === location.origin) {
+      const searchParams = rewriteUrlsInContent(targetUrl.search);
+      if (targetUrl.origin === location.origin) {
         if (
-          requestUrlObj.pathname.startsWith("/" + PREFIX) ||
-          requestUrlObj.pathname.startsWith(ProxyUrl.pathname + PREFIX) ||
-          requestUrlObj.pathname === ProxyUrl.pathname ||
-          requestUrlObj.pathname === "/robots.txt"
+          targetUrl.pathname.startsWith("/" + PREFIX) ||
+          targetUrl.pathname.startsWith(ProxyUrl.pathname + PREFIX) ||
+          targetUrl.pathname === ProxyUrl.pathname ||
+          targetUrl.pathname === "/robots.txt"
         ) {
           return fetch(event.request);
         }
-        let found = false;
-        for (const mark of Marks) {
-          if (requestUrlObj.pathname.startsWith(ProxyUrl.pathname + mark)) {
-            const newUrl =
-              markProto(mark) + "://" + requestUrlObj.pathname.slice(ProxyUrl.pathname.length + mark.length);
-            requestUrlObj = new URL(newUrl);
-            targetProtocol = requestUrlObj.protocol.slice(0, -1);
-            targetHost = requestUrlObj.host;
-            found = true;
-            break;
+        if (targetUrl.pathname.startsWith(ProxyUrl.pathname)) {
+          const [realUrl, found] = restoreUrl(targetUrl.pathname.slice(ProxyUrl.pathname.length));
+          if (found) {
+            targetUrl = new URL(realUrl);
+            targetProtocol = targetUrl.protocol.slice(0, -1);
+            targetHost = targetUrl.host;
           }
         }
-        if (!found) {
+        if (!targetProtocol) {
           targetProtocol = self.proxy_target_protocol || proxy_real_protocol;
           targetHost = self.proxy_target_host || proxy_real_host;
         }
       } else {
-        targetProtocol = requestUrlObj.protocol.slice(0, -1);
-        targetHost = requestUrlObj.host;
+        targetProtocol = targetUrl.protocol.slice(0, -1);
+        targetHost = targetUrl.host;
       }
       let targetReferer = targetProtocol + "://" + targetHost;
-      let requestHeaders = new Headers(event.request.headers);
+      const requestHeaders = new Headers(event.request.headers);
 
       if (requestHeaders.get(HEADER_SITEPROXY_TARGET_HOST)) {
         targetProtocol = requestHeaders.get(HEADER_SITEPROXY_TARGET_PROTOCOL) || "";
@@ -136,8 +132,8 @@ self.addEventListener("fetch", (event) => {
         targetReferer = requestHeaders.get(HEADER_SITEPROXY_REAL_REFERER) || "";
       }
       requestHeaders.set(HEADER_SITEPROXY_NEWREFERER, targetReferer);
-      const finalUrl = ProxyUrl.href + targetProtocol + "/" + targetHost + requestUrlObj.pathname + searchParams;
-      // console.log(`requestUrlObj=${requestUrlObj}, proxy_url=${ProxyUrl}, finalUrl=${finalUrl}`);
+      const finalUrl = ProxyUrl.href + targetProtocol + "://" + targetHost + targetUrl.pathname + searchParams;
+      // console.log(`requestUrlObj=${targetUrl}, proxy_url=${ProxyUrl}, finalUrl=${finalUrl}`);
 
       // 准备 Fetch 选项
       const fetchOptions: RequestInit = {
@@ -161,13 +157,12 @@ self.addEventListener("fetch", (event) => {
           (contentType.includes("json") || contentType.includes("text") || contentType.includes("form"))
         ) {
           let bodyText = await clonedRequest.text();
-
           // 重写 Body 里的 URL
           bodyText = rewriteUrlsInContent(bodyText);
           fetchOptions.body = bodyText;
         } else {
           // 二进制数据直接透传
-          let bodyBuffer = await clonedRequest.arrayBuffer();
+          const bodyBuffer = await clonedRequest.arrayBuffer();
           fetchOptions.body = bodyBuffer;
         }
 

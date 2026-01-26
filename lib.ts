@@ -18,6 +18,7 @@ export const HEADER_HOST = "host";
 export const HEADER_X_FORWARDED_FOR = "x-forwarded-for";
 export const HEADER_CF_CONNECTING_IP = "cf-connecting-ip";
 export const HEADER_CONTENT_SECURITY_POLICY = "content-security-policy";
+export const HEADER_CONTENT_SECURITY_POLICY_REPORT_ONLY = "content-security-policy-report-only";
 export const HEADER_ACCEPT_ENCODING = "Accept-Encoding";
 export const HEADER_SEC_FETCH_DEST = "sec-fetch-dest";
 export const HEADER_CONTENT_DISPOSITION = "content-disposition";
@@ -36,6 +37,10 @@ export const CONTENT_DISPOSITION_ATTACHMENT = "attachment";
 export const CACHE_CONTROL_NO_CACHE = "no-cache, no-store, must-revalidate";
 export const CLEAR_SITE_DATA_ALL = `"*"`;
 
+export const VAR_PROXY_URL = "proxy_url";
+export const VAR_PROXY_REAL_PROTOCOL = "proxy_real_protocol";
+export const VAR_PROXY_REAL_HOST = "proxy_real_host";
+
 export const HTTPS = "https";
 export const HTTP = "http";
 
@@ -50,17 +55,17 @@ export function markProto(mark: (typeof Marks)[number]): "https" | "http" {
 
 /**
  * Restore "https/example.com" or "/https/example.com" style url to canonical form "https://example.com" .
- * If url doesn't match any mark prefix, return as is.
+ * If url doesn't match any mark prefix, return [url, false].
  */
-export function restoreUrl(url: string): string {
+export function restoreUrl(url: string): [url: string, found: boolean] {
   for (const mark of Marks) {
     if (url.startsWith(mark)) {
-      return markProto(mark) + "://" + url.slice(mark.length);
+      return [markProto(mark) + "://" + url.slice(mark.length), true];
     } else if (url.startsWith("/" + mark)) {
-      return markProto(mark) + "://" + url.slice(mark.length + 1);
+      return [markProto(mark) + "://" + url.slice(mark.length + 1), true];
     }
   }
-  return url;
+  return [url, false];
 }
 
 /**
