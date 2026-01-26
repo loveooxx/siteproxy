@@ -1,4 +1,13 @@
-import { PREFIX } from "./lib";
+import {
+  PREFIX,
+  HEADER_SITEPROXY_NEWREFERER,
+  HEADER_SITEPROXY_REAL_REFERER,
+  HEADER_SITEPROXY_TARGET_HOST,
+  HEADER_SITEPROXY_TARGET_PROTOCOL,
+  Marks,
+  markProto,
+  escapeRegExp,
+} from "./lib";
 
 declare var self: ServiceWorkerGlobalScope;
 
@@ -40,7 +49,8 @@ setInterval(cleanCache, 2000);
 // 将响应内容中的原始链接替换为代理链接，恢复 location 等对象
 function rewriteUrlsInContent(content: string) {
   // 将 "/path_prefix/http/___" 格式的链接还原
-  content = content.replace(new RegExp(ProxyUrl.href + "(http[s]?)/([^/]+)", "g"), "$1://$2");
+  // $1 : protocol; $2: host.
+  content = content.replace(new RegExp(escapeRegExp(ProxyUrl.href) + "(https?)(?:://|/)([^/]+)", "g"), "$1://$2");
 
   // 恢复被混淆的 JS 属性
   content = content.replace(/___location/g, "location");
@@ -97,15 +107,19 @@ self.addEventListener("fetch", (event) => {
         ) {
           return fetch(event.request);
         }
-        if (
-          requestUrlObj.pathname.startsWith(ProxyUrl.pathname + "http/") ||
-          requestUrlObj.pathname.startsWith(ProxyUrl.pathname + "https/")
-        ) {
-          const newUrl = requestUrlObj.pathname.slice(ProxyUrl.pathname.length).replace("/", "://");
-          requestUrlObj = new URL(newUrl);
-          targetProtocol = requestUrlObj.protocol.slice(0, -1);
-          targetHost = requestUrlObj.host;
-        } else {
+        let found = false;
+        for (const mark of Marks) {
+          if (requestUrlObj.pathname.startsWith(ProxyUrl.pathname + mark)) {
+            const newUrl =
+              markProto(mark) + "://" + requestUrlObj.pathname.slice(ProxyUrl.pathname.length + mark.length);
+            requestUrlObj = new URL(newUrl);
+            targetProtocol = requestUrlObj.protocol.slice(0, -1);
+            targetHost = requestUrlObj.host;
+            found = true;
+            break;
+          }
+        }
+        if (!found) {
           targetProtocol = self.proxy_target_protocol || proxy_real_protocol;
           targetHost = self.proxy_target_host || proxy_real_host;
         }
@@ -116,12 +130,12 @@ self.addEventListener("fetch", (event) => {
       let targetReferer = targetProtocol + "://" + targetHost;
       let requestHeaders = new Headers(event.request.headers);
 
-      if (requestHeaders.get("siteproxy-target-host")) {
-        targetProtocol = requestHeaders.get("siteproxy-target-protocol") || "";
-        targetHost = requestHeaders.get("siteproxy-target-host") || "";
-        targetReferer = requestHeaders.get("siteproxy-real-referer") || "";
+      if (requestHeaders.get(HEADER_SITEPROXY_TARGET_HOST)) {
+        targetProtocol = requestHeaders.get(HEADER_SITEPROXY_TARGET_PROTOCOL) || "";
+        targetHost = requestHeaders.get(HEADER_SITEPROXY_TARGET_HOST) || "";
+        targetReferer = requestHeaders.get(HEADER_SITEPROXY_REAL_REFERER) || "";
       }
-      requestHeaders.set("siteproxy-newreferer", targetReferer);
+      requestHeaders.set(HEADER_SITEPROXY_NEWREFERER, targetReferer);
       const finalUrl = ProxyUrl.href + targetProtocol + "/" + targetHost + requestUrlObj.pathname + searchParams;
       // console.log(`requestUrlObj=${requestUrlObj}, proxy_url=${ProxyUrl}, finalUrl=${finalUrl}`);
 

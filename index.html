@@ -80,7 +80,7 @@
           alert(`invalid url protocol: ${url.protocol}`);
           return;
         }
-        location.href = `${location.pathname}${url.protocol.slice(0, -1)}/${url.href.slice(url.protocol.length + 2)}`;
+        location.href = `${location.pathname}${url.protocol}//${url.href.slice(url.protocol.length + 2)}`;
       });
     </script>
   </body>

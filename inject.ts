@@ -14,6 +14,10 @@ import {
   HEADER_SITEPROXY_TARGET_HOST,
   HEADER_SITEPROXY_TARGET_PROTOCOL,
   HEADER_SITEPROXY_WINDOW_LOCATION_PATHNAME,
+  Marks,
+  markProto,
+  restoreUrl,
+  fixInputUrl,
 } from "./lib";
 
 // ==========================================
@@ -221,7 +225,7 @@ interface ProxyCurLocationMsg {
       let host = getHostFromProxyPrefixedURL(this.originalLocation.href);
       const colonIndex = host.indexOf(":");
       if (colonIndex !== -1) {
-        host = host.substring(0, colonIndex);
+        host = host.slice(0, colonIndex);
       }
       return host;
     }
@@ -232,7 +236,7 @@ interface ProxyCurLocationMsg {
       const colonIndex = host.indexOf(":");
       let port = "";
       if (colonIndex !== -1) {
-        port = host.substring(colonIndex + 1);
+        port = host.slice(colonIndex + 1);
       }
       return port;
     }
@@ -273,14 +277,13 @@ interface ProxyCurLocationMsg {
   // Construct Referer or helper URL for request headers
   function constructProxyHelperUrl(url: string, realProtocol: string, realHost: string): string {
     if (url.startsWith(ProxyUrl.origin)) {
-      url = url.substring(ProxyUrl.origin.length);
+      url = url.slice(ProxyUrl.origin.length);
       if (url.startsWith(ProxyUrl.pathname)) {
-        url = url.substring(ProxyUrl.pathname.length);
+        url = url.slice(ProxyUrl.pathname.length);
       }
-      if (url.startsWith("https/")) {
-        return "https://" + url.substring(6);
-      } else if (url.startsWith("http/")) {
-        return "http://" + url.substring(5);
+      const restoredUrl = restoreUrl(url);
+      if (restoredUrl !== url) {
+        return restoredUrl;
       } else {
         return realProtocol + "://" + realHost + url;
       }
@@ -351,83 +354,82 @@ interface ProxyCurLocationMsg {
   // ==========================================
 
   function getPathnameFromProxyPrefixedURL(url: string): string {
-    if (!url || !url.startsWith(ProxyUrl.toString())) return "";
-    let urlObj: URL | null = null;
-    url = url.substring(ProxyUrl.toString().length);
-    if (url.startsWith("https/")) {
-      urlObj = new URL("https://" + url.substring(6));
-    } else if (url.startsWith("http/")) {
-      urlObj = new URL("http://" + url.substring(5));
+    if (!url || !url.startsWith(ProxyUrl.href)) {
+      return "";
     }
-    if (urlObj) return urlObj.pathname;
-    return "";
+    let urlObj: URL | null = null;
+    url = url.slice(ProxyUrl.href.length);
+    for (const mark of Marks) {
+      if (url.startsWith(mark)) {
+        urlObj = new URL(markProto(mark) + "://" + url.slice(mark.length));
+        break;
+      }
+    }
+    return urlObj?.pathname || "";
   }
 
   function getHostFromProxyPrefixedURL(url: string): string {
-    if (!url || !url.startsWith(ProxyUrl.toString())) return "";
-    let urlObj: URL | null = null;
-    url = url.substring(ProxyUrl.toString().length);
-    if (url.startsWith("https/")) {
-      urlObj = new URL("https://" + url.substring(6));
-    } else if (url.startsWith("http/")) {
-      urlObj = new URL("http://" + url.substring(5));
+    if (!url || !url.startsWith(ProxyUrl.href)) {
+      return "";
     }
-    if (urlObj) return urlObj.host;
-    return "";
+    let urlObj: URL | null = null;
+    url = url.slice(ProxyUrl.href.length);
+    for (const mark of Marks) {
+      if (url.startsWith(mark)) {
+        urlObj = new URL(markProto(mark) + "://" + url.slice(mark.length));
+        break;
+      }
+    }
+    return urlObj?.host || "";
   }
 
   function setProtocolFromProxyPrefixedURL(currentUrl: string, newProtocol: string): string {
-    if (!newProtocol || !currentUrl || !currentUrl.startsWith(ProxyUrl.toString())) return currentUrl;
-
-    const proxyLen = ProxyUrl.toString().length;
-
-    // Replace https/ with http/ or vice versa
-    if (currentUrl.substring(proxyLen).startsWith("https/")) {
-      // Originally https
-      currentUrl = currentUrl.substring(0, proxyLen) + newProtocol + "/" + currentUrl.substring(proxyLen + 6);
-    } else {
-      // Originally http
-      currentUrl = currentUrl.substring(0, proxyLen) + newProtocol + "/" + currentUrl.substring(proxyLen + 5);
+    if (!newProtocol || !currentUrl.startsWith(ProxyUrl.href)) {
+      return currentUrl;
+    }
+    const relativePath = currentUrl.slice(ProxyUrl.href.length);
+    for (const mark of Marks) {
+      if (relativePath.startsWith(mark)) {
+        return ProxyUrl.href + newProtocol + "://" + currentUrl.slice(ProxyUrl.href.length + mark.length);
+      }
     }
     return currentUrl;
   }
 
   function getProtocolFromProxyPrefixedURL(url: string): string {
-    if (!url || !url.startsWith(ProxyUrl.toString())) return "";
-    url = url.substring(ProxyUrl.toString().length);
-    if (url.startsWith("https/")) return "https";
-    if (url.startsWith("http/")) return "http";
-    return "";
+    if (!url || !url.startsWith(ProxyUrl.href)) {
+      return "";
+    }
+    url = url.slice(ProxyUrl.href.length);
+    for (const mark of Marks) {
+      if (url.startsWith(mark)) {
+        return markProto(mark);
+      }
+    }
+    return "https";
   }
 
   // Core Function: Remove proxy prefix, restore real URL
   function removeProxyPrefix(url: string): string {
-    if (!url || !url.startsWith(ProxyUrl.origin)) return url;
-
-    // Remove Proxy URL (e.g. http://localhost:5006)
-    let relativePath = url.substring(ProxyUrl.origin.length);
-    if (relativePath.startsWith("/")) relativePath = relativePath.substring(1);
-
-    // Remove Token (e.g. /user123/)
-    let token = ProxyUrl.pathname.slice(1);
-    if (relativePath.startsWith(token)) {
-      relativePath = relativePath.substring(token.length);
+    if (!url.startsWith(ProxyUrl.origin)) {
+      return url;
     }
-
-    // Restore Protocol
-    if (relativePath.startsWith("https/")) {
-      return "https://" + relativePath.substring(6);
-    } else if (relativePath.startsWith("http/")) {
-      return "http://" + relativePath.substring(5);
-    } else {
-      // If no protocol prefix, assume current page protocol and host
-      return ProxyRealProtocol + "://" + ProxyRealHost + "/" + relativePath;
+    const urlWithoutOrigin = url.slice(ProxyUrl.origin.length);
+    if (urlWithoutOrigin.startsWith(ProxyUrl.pathname)) {
+      const relativePath = urlWithoutOrigin.slice(ProxyUrl.pathname.length);
+      const restoredUrl = restoreUrl(relativePath);
+      if (restoredUrl.startsWith("https://") || restoredUrl.startsWith("http://")) {
+        return restoredUrl;
+      }
     }
+    return ProxyRealProtocol + "://" + ProxyRealHost + urlWithoutOrigin;
   }
 
-  // Core Function: Add proxy prefix (Convert real URL to Proxy URL)
+  /**
+   * Real url => proxied url
+   */
   function addProxyPrefix(url: string | null): string {
-    if (!url || url.startsWith(ProxyUrl.toString())) {
+    if (!url || url.startsWith(ProxyUrl.href)) {
       return url || "";
     }
 
@@ -448,14 +450,15 @@ interface ProxyCurLocationMsg {
       url.startsWith("webcal:") ||
       url.startsWith("content:") ||
       url.startsWith("ssh:") ||
-      url.startsWith("vbscript:")
+      url.startsWith("vbscript:") ||
+      url.startsWith("chrome-extension:")
     ) {
       return url;
     }
 
     // If starts with proxy origin, remove it to keep just path
     if (url.startsWith(ProxyUrl.origin)) {
-      url = url.substring(ProxyUrl.origin.length);
+      url = url.slice(ProxyUrl.origin.length);
     }
 
     // Handle absolute paths inside string (e.g., in regex replacement)
@@ -465,30 +468,24 @@ interface ProxyCurLocationMsg {
       url = url.replace(regex, (match, p1, protocolPart, hostPart, offset, string) => {
         let protocol: string;
         if (protocolPart === "//") {
-          protocol = "https"; // Default // to https
+          protocol = "https";
         } else {
           protocol = protocolPart.replace("://", "").toLowerCase();
         }
-        return ProxyUrl.toString() + protocol + "/" + hostPart;
+        return ProxyUrl.href + protocol + "://" + hostPart;
       });
     }
 
     // Clean duplicate prefixes
-    let proxyBase = ProxyUrl.origin.substring(ProxyUrl.origin.indexOf("//"));
-    if (url.startsWith(proxyBase)) {
-      url = url.substring(proxyBase.length);
+    if (url === "//" + ProxyUrl.host || url.startsWith("//" + ProxyUrl.host + "/")) {
+      url = url.slice(2 + ProxyUrl.host.length);
     }
 
     // Construct full proxy URL
-    let defaultProxyBase = ProxyUrl.toString() + ProxyRealProtocol + "/" + ProxyRealHost;
-
-    // Note: ProxyUrl.toString() typically ends with / based on URL constructor,
-    // ensuring logic handles slashes correctly.
-    let prefix = ProxyUrl.toString().endsWith("/") ? ProxyUrl.toString().slice(0, -1) : ProxyUrl.toString();
+    let defaultProxyBase = ProxyUrl.href + ProxyRealProtocol + "://" + ProxyRealHost;
 
     if (url.startsWith("//")) {
-      url = prefix + "/https/" + url.slice(2);
-      url = url.replace("//https", "/https");
+      url = ProxyUrl.href + "https://" + url.slice(2);
     } else if (url.startsWith("/")) {
       url = defaultProxyBase + url;
     }
@@ -728,13 +725,10 @@ interface ProxyCurLocationMsg {
     // --- Event Handling ---
     form.onsubmit = function (e: SubmitEvent) {
       e.preventDefault();
-      let targetUrl = input.value.trim();
-      if (!targetUrl) return;
-
-      if (!targetUrl.startsWith("http://") && !targetUrl.startsWith("https://")) {
-        targetUrl = "https://" + targetUrl;
+      let targetUrl = fixInputUrl(input.value);
+      if (!targetUrl) {
+        return;
       }
-
       window.location.href = addProxyPrefix(targetUrl);
     };
 
@@ -825,7 +819,7 @@ interface ProxyCurLocationMsg {
             return;
           }
           const params = new URLSearchParams({
-            proxy_url: ProxyUrl.toString(),
+            proxy_url: ProxyUrl.href,
             proxy_real_protocol: ProxyRealProtocol,
             proxy_real_host: ProxyRealHost,
           });
