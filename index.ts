@@ -1,6 +1,7 @@
 // Backend main script file for both Cloudflare Workers and node.js env.
 
 import { type HonoRequest, Hono } from "hono";
+import { HEADER_PREFIX_SITEPROXY, PREFIX } from "./lib";
 
 const IS_NODE = typeof globalThis.addEventListener === "undefined";
 
@@ -39,7 +40,6 @@ const HEADER_HOST = "host";
 const HEADER_X_FORWARDED_FOR = "x-forwarded-for";
 const HEADER_CF_CONNECTING_IP = "cf-connecting-ip";
 const HEADER_SITEPROXY_NEWREFERER = "siteproxy-newreferer";
-const HEADER_PREFIX_SITEPROXY = "siteproxy-";
 const HEADER_CONTENT_SECURITY_POLICY = "content-security-policy";
 const HEADER_ACCEPT_ENCODING = "Accept-Encoding";
 const HEADER_SEC_FETCH_DEST = "sec-fetch-dest";
@@ -380,14 +380,14 @@ async function modResponse(
   // 注入的脚本内容：设置全局变量，加载 Service Worker 注册脚本
   const injectionScript = `
   <script>
-    if (!window.__SITEPROXY_INJECTED__) { 
-      window.__SITEPROXY_PROXY_URL__ = '${proxyUrl.href}';
-      window.__SITEPROXY_REAL_PROTOCOL__ = '${targetProtocol}';
-      window.__SITEPROXY_REAL_HOST__ = '${targetHost}';
-      window.__SITEPROXY_HIDE_HEADER__ = ${hideHeader};
+    if (!window.__SITEPROXY_INJECTED) { 
+      window.__SITEPROXY_PROXY_URL = '${proxyUrl.href}';
+      window.__SITEPROXY_REAL_PROTOCOL = '${targetProtocol}';
+      window.__SITEPROXY_REAL_HOST = '${targetHost}';
+      window.__SITEPROXY_HIDE_HEADER = ${hideHeader};
     } 
   </script>
-  <script src="/__siteproxy_injected__.js"></script>`;
+  <script src="/${PREFIX}inject.js"></script>`;
 
   // 处理重定向 (301/302 Location 头重写)
   handleRedirects(proxyResponse, newResHeaders, proxyUrl.href, targetProtocol, targetHost);
@@ -802,23 +802,23 @@ if (IS_NODE) {
 
   // static assets, served from "/".
   const { serveStatic } = await import("@hono/node-server/serve-static");
-  const assetPathes = ["/robots.txt", "/__siteproxy_injected__.js", "/__siteproxy_service_worker__.js"] as const;
-  for (const assetPath of assetPathes) {
-    app.use(assetPath, serveStatic({ path: __dirname + "/assets" + assetPath }));
+  const assets = ["robots.txt", PREFIX + "inject.js", PREFIX + "sw.js"] as const;
+  for (const asset of assets) {
+    app.use("/" + asset, serveStatic({ path: __dirname + "/dist/" + asset }));
   }
 
   // serve proxy root html.
-  app.use(ProxyUrl.pathname, serveStatic({ path: __dirname + "/assets/__siteproxy_index__.html" }));
+  app.use(ProxyUrl.pathname, serveStatic({ path: __dirname + `/dist/${PREFIX}index.html` }));
 } else {
   // static assets served by wrangle.json ASSETS.
 
   // serve proxy root html from CF Workers assets binding.
   app.get(ProxyUrl.pathname, async (ctx) => {
-    return ctx.env.ASSETS.fetch(new URL(ctx.req.url).origin + "/__siteproxy_index__.html");
+    return ctx.env.ASSETS.fetch(new URL(ctx.req.url).origin + `/${PREFIX}index.html`);
   });
 }
 
-app.get(ProxyUrl.pathname + "__siteproxy_api__", (ctx) => {
+app.get(ProxyUrl.pathname + PREFIX + "api", (ctx) => {
   ctx.header(HEADER_CACHE_CONTROL, CACHE_CONTROL_NO_CACHE);
 
   const action = ctx.req.query("action") || "";

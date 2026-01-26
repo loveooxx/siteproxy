@@ -1,14 +1,28 @@
+import { PREFIX } from "./lib";
+
+declare var self: ServiceWorkerGlobalScope;
+
+declare global {
+  interface ServiceWorkerGlobalScope {
+    proxy_target_protocol: string;
+    proxy_target_host: string;
+  }
+}
+
 const params = new URLSearchParams(location.search);
 
 const proxy_url = params.get("proxy_url");
-const proxy_real_protocol = params.get("proxy_real_protocol");
-const proxy_real_host = params.get("proxy_real_host");
+if (!proxy_url) {
+  throw new Error("empty proxy_url");
+}
 const ProxyUrl = new URL(proxy_url);
+const proxy_real_protocol = params.get("proxy_real_protocol") || "";
+const proxy_real_host = params.get("proxy_real_host") || "";
 
 console.log("Service Worker", ProxyUrl.href, proxy_real_protocol, proxy_real_host);
 
 // --- 全局变量：URL 映射缓存 ---
-var pathHostCache = {};
+const pathHostCache: Record<string, any> = {};
 
 // --- 定时任务：清理过期的缓存 ---
 function cleanCache() {
@@ -24,7 +38,7 @@ setInterval(cleanCache, 2000);
 
 // --- 辅助函数：重写内容中的 URL ---
 // 将响应内容中的原始链接替换为代理链接，恢复 location 等对象
-let rewriteUrlsInContent = (content) => {
+function rewriteUrlsInContent(content: string) {
   // 将 "/path_prefix/http/___" 格式的链接还原
   content = content.replace(new RegExp(ProxyUrl.href + "(http[s]?)/([^/]+)", "g"), "$1://$2");
 
@@ -35,7 +49,7 @@ let rewriteUrlsInContent = (content) => {
   content = content.replace(/navigator.___serviceWorker/g, "navigator.serviceWorker");
   content = content.replace(/document.___requestStorageAccessFor/g, "document.requestStorageAccessFor");
   return content;
-};
+}
 
 // --- Service Worker 消息监听 ---
 self.addEventListener("message", (event) => {
@@ -76,8 +90,8 @@ self.addEventListener("fetch", (event) => {
 
       if (requestUrlObj.origin === location.origin) {
         if (
-          requestUrlObj.pathname.startsWith("/__siteproxy_") ||
-          requestUrlObj.pathname.startsWith(ProxyUrl.pathname + "__siteproxy_") ||
+          requestUrlObj.pathname.startsWith("/" + PREFIX) ||
+          requestUrlObj.pathname.startsWith(ProxyUrl.pathname + PREFIX) ||
           requestUrlObj.pathname === ProxyUrl.pathname ||
           requestUrlObj.pathname === "/robots.txt"
         ) {
@@ -103,16 +117,16 @@ self.addEventListener("fetch", (event) => {
       let requestHeaders = new Headers(event.request.headers);
 
       if (requestHeaders.get("siteproxy-target-host")) {
-        targetProtocol = requestHeaders.get("siteproxy-target-protocol");
-        targetHost = requestHeaders.get("siteproxy-target-host");
-        targetReferer = requestHeaders.get("siteproxy-real-referer");
+        targetProtocol = requestHeaders.get("siteproxy-target-protocol") || "";
+        targetHost = requestHeaders.get("siteproxy-target-host") || "";
+        targetReferer = requestHeaders.get("siteproxy-real-referer") || "";
       }
       requestHeaders.set("siteproxy-newreferer", targetReferer);
       const finalUrl = ProxyUrl.href + targetProtocol + "/" + targetHost + requestUrlObj.pathname + searchParams;
       // console.log(`requestUrlObj=${requestUrlObj}, proxy_url=${ProxyUrl}, finalUrl=${finalUrl}`);
 
       // 准备 Fetch 选项
-      const fetchOptions = {
+      const fetchOptions: RequestInit = {
         method: event.request.method,
         headers: requestHeaders,
         mode: "cors",

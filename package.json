@@ -1,6 +1,6 @@
 {
   "$schema": "http://json.schemastore.org/package",
-  "version": "2.5.0",
+  "version": "2.5.1",
   "name": "siteproxy",
   "bin": "index.js",
   "type": "module",
@@ -8,15 +8,20 @@
     "node": ">=22.0.0"
   },
   "scripts": {
-    "build": "tsc",
+    "build:server": "vite build -c vite.config.server.ts",
+    "build:client": "vite build -c vite.config.client.ts",
+    "build:sw": "vite build -c vite.config.sw.ts",
+    "build": "npm run build:server && npm run build:client && npm run build:sw",
     "start": "tsx index.ts",
     "cfdev": "wrangler dev --port 5006",
-    "cfdeploy": "wrangler deploy"
+    "cfdeploy": "npm run build && wrangler deploy"
   },
   "devDependencies": {
     "@types/node": "^25.0.10",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
+    "vite": "^7.3.1",
+    "vite-plugin-static-copy": "^3.1.6",
     "wrangler": "^4.60.0"
   },
   "dependencies": {

@@ -37,6 +37,7 @@ Deploy. Then open `PROXY_URL` in browser.
 
 ```
 npm i
+npm run build
 npm start
 ```
 
