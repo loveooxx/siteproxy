@@ -76,7 +76,6 @@ or (runtime) variables (Cloudflare Workers env) to configure them.
   - E.g. `https://siteproxy.workers.dev` or `https://siteproxy.workers.dev/proxy/` .
   - If not set, it defaults to `http://localhost:<PORT>`, which only works in local environment.
   - In non-localhost origin service worker requires `https`. You need a https enabled reverse proxy (like nginx or Cloudflare CDN) in node.js env.
-- (Optional) `PORT` : Applies in node.js env only. Http server listening port. Defaults to `5006`.
 - (Optional) `HIDE_TOP` : Set to `1` to hide the top bar in proxified website page.
 - (Optional) `SCRIPT` : The custom JavaScript file url to inject to proxified website page.
 Use `{{domain}}` as placeholder of current website domain. E.g. `https://example.com/{{domain}}.js` .
@@ -84,3 +83,9 @@ Use `{{domain}}` as placeholder of current website domain. E.g. `https://example
 only inject `SCRIPT` if website domain is or ends with any domain of the list.
 - (Optional) `DEBUG` : Flag to enable debug logging to stdout. Set to `1` or `*` to log all;
 Set to comma-separated keyword list to log only if current website url contains any keyword in list.
+- (Optional) `PORT` : Valid in node.js env only. Http server listen port. Defaults to `5006`.
+- (Optional) `ADDR` : Valid in node.js env only. Http server listen addr. Defaults to `0.0.0.0`.
+
+There are also few build time variables:
+
+- (optional) `SITENAME` : Defaults to `Siteproxy`.

@@ -29,6 +29,8 @@ import {
   HEADER_X_FORWARDED_FOR,
   HEADER_X_FRAME_OPTIONS,
   HEADER_TRANSFER_ENCODING,
+  HEADER_SITEPROXY_TARGET_PROTOCOL,
+  HEADER_SITEPROXY_TARGET_HOST,
   HTML_MODIFIABLE_FETCH_DEST_,
   JS_MODIFIABLE_FETCH_DEST,
   CONTENT_DISPOSITION_ATTACHMENT,
@@ -47,6 +49,7 @@ import {
 const IS_NODE = typeof globalThis.addEventListener === "undefined";
 
 const Port = parseInt(process.env.PORT || "") || 5006;
+const Addr = process.env.ADDR || "0.0.0.0";
 
 if (!process.env.PROXY_URL) {
   process.env.PROXY_URL = `http://localhost${Port !== 80 ? `:${Port}` : ""}/`;
@@ -232,30 +235,29 @@ function deleteCookieHeader(name: string) {
 
 /**
  * 构建真实请求的 Header，处理和清洗请求头。
- * @param {Headers} originalHeaders - 原始请求头对象
+ * @param {Headers} rawReqHeaders - 原始请求头对象
  * @param {string} targetProtocol - 目标协议 (http/https)
  * @param {string} targetHost - 目标主机 (www.google.com)
  * @returns {Promise<Object>} 处理后的普通对象格式的 Headers
  */
 function processHeaders(
   proxyUrl: URL,
-  originalHeaders: Headers,
-  targetProtocol: string,
-  targetHost: string
-): [targetReqHeaders: Headers, directResponse?: Response] {
-  const targetReqHeaders = new Headers();
-  originalHeaders.forEach((value, key) => {
+  targetUrl: URL,
+  rawReqHeaders: Headers
+): [reqHeaders: Headers, directResponse?: Response] {
+  const reqHeaders = new Headers();
+  rawReqHeaders.forEach((value, key) => {
     key = key.toLowerCase();
     if (key.startsWith(HEADER_PREFIX_SITEPROXY) || key === HEADER_X_FORWARDED_FOR || key === HEADER_CF_CONNECTING_IP) {
       return;
     }
-    targetReqHeaders.append(key, value);
+    reqHeaders.append(key, value);
   });
-  targetReqHeaders.set(HEADER_HOST, targetHost);
-  targetReqHeaders.set(HEADER_ACCEPT_ENCODING, "gzip");
+  reqHeaders.set(HEADER_HOST, targetUrl.host);
+  reqHeaders.set(HEADER_ACCEPT_ENCODING, "gzip");
 
   let directResponse: Response | undefined;
-  const cookieStr = targetReqHeaders.get(HEADER_COOKIE);
+  const cookieStr = reqHeaders.get(HEADER_COOKIE);
   // --- Cookie 大小安全检查 ---
   if (cookieStr) {
     // 计算 Cookie 字节长度 (兼容 Node 和 Cloudflare Workers 环境)
@@ -275,26 +277,26 @@ function processHeaders(
 
   // 4. --- Referer 和 Origin 重写逻辑 ---
   // 这一步非常关键，防止目标网站检测到防盗链
-  if (targetReqHeaders.has(HEADER_SITEPROXY_NEWREFERER)) {
+  if (reqHeaders.has(HEADER_SITEPROXY_NEWREFERER)) {
     // A. 优先使用 Service Worker 或前端脚本指定的自定义 Referer
-    targetReqHeaders.set(HEADER_REFERER, targetReqHeaders.get(HEADER_SITEPROXY_NEWREFERER)!);
+    reqHeaders.set(HEADER_REFERER, reqHeaders.get(HEADER_SITEPROXY_NEWREFERER)!);
     try {
-      const refUrl = new URL(targetReqHeaders.get(HEADER_SITEPROXY_NEWREFERER)!);
-      targetReqHeaders.set(HEADER_ORIGIN, refUrl.origin);
+      const refUrl = new URL(reqHeaders.get(HEADER_SITEPROXY_NEWREFERER)!);
+      reqHeaders.set(HEADER_ORIGIN, refUrl.origin);
     } catch (e) {
       // 忽略 URL 解析错误
     }
-  } else if (targetReqHeaders.get(HEADER_REFERER)?.startsWith(proxyUrl.href)) {
+  } else if (reqHeaders.get(HEADER_REFERER)?.startsWith(proxyUrl.href)) {
     // Restore referer:
     // "https://proxy.com/token/https/www.google.com/foo" => "https/www.google.com/foo"
-    const [realUrl] = restoreUrl(targetReqHeaders.get(HEADER_REFERER)!.slice(proxyUrl.href.length));
-    targetReqHeaders.set(HEADER_REFERER, realUrl);
-    targetReqHeaders.set(HEADER_ORIGIN, targetProtocol + "://" + targetHost);
-  } else if (targetReqHeaders.get(HEADER_ORIGIN) === proxyUrl.origin) {
+    const [realUrl] = restoreUrl(reqHeaders.get(HEADER_REFERER)!.slice(proxyUrl.href.length));
+    reqHeaders.set(HEADER_REFERER, realUrl);
+    reqHeaders.set(HEADER_ORIGIN, targetUrl.origin);
+  } else if (reqHeaders.get(HEADER_ORIGIN) === proxyUrl.origin) {
     // C. 如果 Origin 是代理服务器的域名 (常见于 AJAX/CORS 请求)，修正为目标域
-    targetReqHeaders.set(HEADER_ORIGIN, targetProtocol + "://" + targetHost);
+    reqHeaders.set(HEADER_ORIGIN, targetUrl.origin);
   }
-  return [targetReqHeaders, directResponse];
+  return [reqHeaders, directResponse];
 }
 
 function location_regex_replace(proxyUrl: URL, location: string): string {
@@ -314,7 +316,7 @@ function location_regex_replace(proxyUrl: URL, location: string): string {
 function modLocation(proxyUrl: URL, targetUrl: URL, location: string): string {
   let newLocation = location_regex_replace(proxyUrl, location);
   if (newLocation.startsWith("/")) {
-    newLocation = proxyUrl.href + targetUrl.protocol + "://" + targetUrl.host + newLocation;
+    newLocation = proxyUrl.href + targetUrl.protocol + "//" + targetUrl.host + newLocation;
   }
   return newLocation;
 }
@@ -726,18 +728,25 @@ app.get(ProxyUrl.pathname + PREFIX + "api", (ctx) => {
   return ctx.text("invalid", 400);
 });
 
-app.get("*", async (ctx, next, deps = {}) => {
+app.all("*", async (ctx, next, deps = {}) => {
   const { DEBUG, HIDE_TOP, SCRIPT, SCRIPT_DOMAINS } = env<Bindings>(ctx);
+  const rawReqHeaders = ctx.req.raw.headers;
   const urlObj = new URL(ctx.req.url);
   if (shouldLog(ctx.req.url, DEBUG)) {
     console.log("req", ctx.req.url);
   }
-  if (!urlObj.pathname.startsWith(ProxyUrl.pathname)) {
+  let pathAfterToken = "";
+  if (urlObj.pathname.startsWith(ProxyUrl.pathname) + "http") {
+    // Extract real url from pathname.
+    pathAfterToken = urlObj.pathname.slice(ProxyUrl.pathname.length);
+  } else if (rawReqHeaders.get(HEADER_SITEPROXY_TARGET_PROTOCOL)) {
+    // Extract real url from headers.
+    const targetProtocol = rawReqHeaders.get(HEADER_SITEPROXY_TARGET_PROTOCOL) || "";
+    const targetHost = rawReqHeaders.get(HEADER_SITEPROXY_TARGET_HOST) || "";
+    pathAfterToken = targetProtocol + "://" + targetHost + urlObj.pathname;
+  } else {
     return next();
   }
-  // 从 Path 中提取真实的目标 Protocol 和 Host
-  // 例如: /https/google.com/search -> protocol: https, host: google.com
-  const pathAfterToken = urlObj.pathname.slice(ProxyUrl.pathname.length);
   const [targetProtocol, targetHost, targetPathname] = pathname2Target(pathAfterToken, ProxyUrl);
   if (targetProtocol !== "http" && targetProtocol !== "https") {
     return next();
@@ -747,8 +756,8 @@ app.get("*", async (ctx, next, deps = {}) => {
   if (UrlKeywordBlacklist.some((keyword) => targetUrl.href.includes(keyword))) {
     return next();
   }
-  const rawReqHeaders = ctx.req.raw.headers;
-  const [reqHeaders, directResponse] = processHeaders(ProxyUrl, rawReqHeaders, targetProtocol, targetHost);
+
+  const [reqHeaders, directResponse] = processHeaders(ProxyUrl, targetUrl, rawReqHeaders);
   if (directResponse) {
     return directResponse;
   }
@@ -790,15 +799,9 @@ export default app;
 
 if (IS_NODE) {
   const { serve } = await import("@hono/node-server");
-  try {
-    serve({ fetch: app.fetch, hostname: "::", port: Port }, (info) => {
-      console.log(`Http server is listening on ${info.address} addr ${info.port} port`);
-    });
-  } catch (err) {
-    serve({ fetch: app.fetch, hostname: "0.0.0.0", port: Port }, (info) => {
-      console.log(`Http server is listening on ${info.address} addr ${info.port} port`);
-    });
-  }
+  serve({ fetch: app.fetch, hostname: Addr, port: Port }, (info) => {
+    console.log(`Http server is listening on ${info.address} addr ${info.port} port`);
+  });
 } else {
   // In Cloudflare Workers env the exported app is served by Cloudflare Worker directly.
 }

@@ -1,10 +1,10 @@
 <!DOCTYPE html>
-<!--Note: this file is served dynamically from index.ts backend script-->
+<!-- This file is served dynamically from index.ts backend script-->
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Siteproxy</title>
+    <title>%SITENAME%</title>
     <style>
       body {
         display: flex;
@@ -19,7 +19,6 @@
       }
       h1 {
         display: flex;
-        justify-content: space-between;
         color: #a89e84;
       }
       .search-box {
@@ -41,21 +40,24 @@
       .warn {
         color: red;
       }
+      footer {
+        text-align: center;
+      }
     </style>
   </head>
   <body>
     <div class="container">
-      <h1>
-        <span>
-          Siteproxy v%VERSION% (<a href="https://github.com/sagan/siteproxy" rel="noopener noreferrer">Github</a>)
-        </span>
-        <a href="./%PREFIX%api?action=clear" title="Clear cache">Clear</a>
-      </h1>
+      <h1>%SITENAME%</h1>
       <form id="form" method="get" action="./%PREFIX%api">
         <input type="hidden" name="action" value="go" />
         <input autofocus type="search" class="search-box" name="url" placeholder="Input the url and press Enter" />
       </form>
       <noscript><div class="warn">JavaScript is disabled. Some websites may not load normally.</div></noscript>
+      <footer>
+        v%VERSION%
+        <a href="https://github.com/sagan/siteproxy" rel="noopener noreferrer">Github</a>&nbsp;|
+        <a href="./%PREFIX%api?action=clear" title="Clear cache">Clear cache</a>
+      </footer>
     </div>
     <script>
       const formEl = document.querySelector("#form");

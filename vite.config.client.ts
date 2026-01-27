@@ -2,8 +2,11 @@ import { defineConfig } from "vite";
 import { resolve } from "path";
 import { builtinModules } from "module";
 import { viteStaticCopy } from "vite-plugin-static-copy";
-import { PREFIX } from "./lib";
+import { DEFAULT_SITENAME, PREFIX } from "./lib";
 import { version as VERSION } from "./package.json";
+
+const SITENAME = process.env.SITENAME || DEFAULT_SITENAME;
+const BuildVariables: Record<string, string> = { SITENAME, PREFIX, VERSION };
 
 export default defineConfig({
   plugins: [
@@ -17,7 +20,8 @@ export default defineConfig({
           src: "index.html",
           dest: ".",
           rename: (name, ext) => PREFIX + name + (ext ? "." + ext : ""),
-          transform: (contents: string) => contents.replaceAll("%PREFIX%", PREFIX).replaceAll("%VERSION%", VERSION),
+          transform: (str: string) =>
+            Object.keys(BuildVariables).reduce((v, NAME) => v.replaceAll(`%${NAME}%`, BuildVariables[NAME]), str),
         },
       ],
     }),

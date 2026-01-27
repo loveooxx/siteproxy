@@ -1,5 +1,7 @@
 // Common codes shared by index (backend) / inject / sw.
 
+export const DEFAULT_SITENAME = "Siteproxy";
+
 /**
  * filename / url path prefix for siteproxy
  */
@@ -16,13 +18,89 @@ export const FLAG_DIRECT = PREFIX + "direct__";
 export const FLAG_RAW = PREFIX + "raw__";
 
 export const METHOD_GET = "GET";
+export const METHOD_HEAD = "HEAD";
+export const METHOD_OPTIONS = "OPTIONS";
+export const METHOD_TRACE = "TRACE";
 export const METHOD_POST = "POST";
 export const METHOD_PUT = "PUT";
 export const METHOD_PATCH = "PATCH";
-export const METHOD_HEAD = "HEAD";
-export const METHOD_TRACE = "TRACE";
-export const NO_REQUEST_BODY_METHODS = [METHOD_GET, METHOD_HEAD, METHOD_TRACE] as const;
-export const WITH_REQUEST_BODY_METHODS = [METHOD_POST, METHOD_PUT, METHOD_PATCH] as const;
+export const METHOD_DELETE = "DELETE";
+export const METHOD_CONNECT = "CONNECT";
+// webdav extend methods
+export const METHOD_ACL = "ACL";
+export const METHOD_BIND = "BIND";
+export const METHOD_CHECKOUT = "CHECKOUT";
+export const METHOD_COPY = "COPY";
+export const METHOD_LOCK = "LOCK";
+export const METHOD_MERGE = "MERGE";
+export const METHOD_MKACTIVITY = "MKACTIVITY";
+export const METHOD_MKCALENDAR = "MKCALENDAR";
+export const METHOD_MKCOL = "MKCOL";
+export const METHOD_MOVE = "MOVE";
+export const METHOD_PROPFIND = "PROPFIND";
+export const METHOD_PROPPATCH = "PROPPATCH";
+export const METHOD_PURGE = "PURGE";
+export const METHOD_REBIND = "REBIND";
+export const METHOD_REPORT = "REPORT";
+export const METHOD_SEARCH = "SEARCH";
+export const METHOD_UNBIND = "UNBIND";
+export const METHOD_UNCHECKOUT = "UNCHECKOUT";
+export const METHOD_UNLOCK = "UNLOCK";
+export const METHOD_UPDATE = "UPDATE";
+export const METHOD_VERSION_CONTROL = "VERSION-CONTROL";
+
+/**
+ * all http methods, including extensions methods like WebDAV.
+ */
+export const ALL_METHODS = [
+  METHOD_GET,
+  METHOD_HEAD,
+  METHOD_OPTIONS,
+  METHOD_TRACE,
+  METHOD_POST,
+  METHOD_PUT,
+  METHOD_PATCH,
+  METHOD_DELETE,
+  METHOD_CONNECT,
+
+  METHOD_ACL,
+  METHOD_BIND,
+  METHOD_CHECKOUT,
+  METHOD_COPY,
+  METHOD_LOCK,
+  METHOD_MERGE,
+  METHOD_MKACTIVITY,
+  METHOD_MKCALENDAR,
+  METHOD_MKCOL,
+  METHOD_MOVE,
+  METHOD_PROPFIND,
+  METHOD_PROPPATCH,
+  METHOD_PURGE,
+  METHOD_REBIND,
+  METHOD_REPORT,
+  METHOD_SEARCH,
+  METHOD_UNBIND,
+  METHOD_UNCHECKOUT,
+  METHOD_UNLOCK,
+  METHOD_UPDATE,
+  METHOD_VERSION_CONTROL,
+] as const;
+
+export const NO_REQUEST_BODY_METHODS = [
+  METHOD_GET,
+  METHOD_HEAD,
+  METHOD_TRACE,
+  METHOD_OPTIONS,
+  METHOD_PROPFIND,
+] as const;
+
+export const WITH_REQUEST_BODY_METHODS = [
+  METHOD_POST,
+  METHOD_PUT,
+  METHOD_PATCH,
+  METHOD_PROPPATCH,
+  METHOD_MKCOL,
+] as const;
 
 // For compatibility, define all headers as full lowercase form.
 export const HEADER_CONTENT_TYPE = "content-type";

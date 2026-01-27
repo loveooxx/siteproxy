@@ -471,6 +471,61 @@ declare global {
     return url;
   }
 
+  /*
+Native API Monkey Patching to make our MutationObserver work with sync page script. E.g.
+
+var n = document.createElement("a");
+n.id = "newPageTab",
+n.target = t || "_blank",
+n.href = "...",
+document.body.appendChild(n),
+n.click(),
+document.body.removeChild(n)
+
+By default, MutationObserver doesn't capture the above code because it's designed to be performant,
+so it is asynchronous. It waits for the current script execution to finish before firing its callback.
+
+To make it work, we must intercept the element synchronously before it is used.
+The most robust way to do this is to override (monkey patch) native DOM insertion methods,
+force our rewrite logic to run immediately before the node enters the DOM.
+
+With the override in place, the flow becomes:
+1. Script: n.href = "..."
+2. Script: document.body.appendChild(n)
+  - Our Hook: traverseAndRewriteNode(n) runs synchronously.
+  - Our Hook: n.href is rewritten to the proxied URL.
+  - Our Hook: originalAppendChild puts the safe node into the DOM.
+3. Script: n.click() triggers navigation using the proxied URL.
+
+   */
+  // 1. Capture the original native methods
+  const originalAppendChild = Node.prototype.appendChild;
+  const originalInsertBefore = Node.prototype.insertBefore;
+  // 2. Override appendChild
+  Node.prototype.appendChild = function <T extends Node>(node: T): T {
+    // Force a rewrite BEFORE the node is actually inserted
+    traverseAndRewriteNode(node);
+    // Proceed with the original logic
+    return originalAppendChild.call(this, node) as T;
+  };
+  // 3. Override insertBefore (just in case)
+  Node.prototype.insertBefore = function <T extends Node>(node: T, child: Node | null): T {
+    traverseAndRewriteNode(node);
+    return originalInsertBefore.call(this, node, child) as T;
+  };
+  const originalSetAttribute = Element.prototype.setAttribute;
+  Element.prototype.setAttribute = function (name: string, value: string): void {
+    // Check if we care about this attribute
+    if (monitoredAttributes.includes(name)) {
+      const proxiedValue = addProxyPrefix(value);
+      // Call original with the NEW value
+      return originalSetAttribute.call(this, name, proxiedValue);
+    }
+    // Pass through unrelated attributes untouched
+    return originalSetAttribute.call(this, name, value);
+  };
+  // --- End Native Overrides ---
+
   // ==========================================
   // 8. DOM Observation & Auto URL Rewriting (MutationObserver)
   // ==========================================
