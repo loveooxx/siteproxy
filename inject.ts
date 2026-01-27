@@ -1,5 +1,5 @@
 /**
- * SiteProxy Client Side Injection Script
+ * SiteProxy Client Side Injection Script.
  * * 功能：
  * 1. 劫持 window.open, History API, fetch, XHR。
  * 2. 模拟 window.location (LocationProxy)，欺骗页面脚本认为在原站运行。
@@ -9,7 +9,10 @@
  */
 
 import {
+  type ProxyCurLocationMsg,
+  type ProxyUrlHostMapMsg,
   PREFIX,
+  METHOD_POST,
   HEADER_SITEPROXY_REAL_REFERER,
   HEADER_SITEPROXY_TARGET_HOST,
   HEADER_SITEPROXY_TARGET_PROTOCOL,
@@ -17,10 +20,13 @@ import {
   VAR_PROXY_URL,
   VAR_PROXY_REAL_PROTOCOL,
   VAR_PROXY_REAL_HOST,
+  VAR_PROXY_DEBUG,
   Marks,
   markProto,
   restoreUrl,
   fixInputUrl,
+  str2int,
+  isBaseOrSubHost,
 } from "./lib";
 
 // ==========================================
@@ -33,7 +39,8 @@ declare global {
     __SITEPROXY_PROXY_URL: string;
     __SITEPROXY_REAL_PROTOCOL: string;
     __SITEPROXY_REAL_HOST: string;
-    __SITEPROXY_HIDE_HEADER?: boolean;
+    __SITEPROXY_HIDE_TOP: string;
+    __SITEPROXY_DEBUG: string;
     ___URL: typeof window.URL;
     ___location: any;
 
@@ -61,24 +68,6 @@ declare global {
   }
 }
 
-// Interface for Service Worker Messages
-interface ProxyUrlHostMapMsg {
-  type: "PROXY_URL_HOST_MAP";
-  data: {
-    pathname: string;
-    real_protocol: string;
-    real_host: string;
-  };
-}
-
-interface ProxyCurLocationMsg {
-  type: "PROXY_CUR_LOCATION";
-  data: {
-    protocol: string;
-    host: string;
-  };
-}
-
 // ==========================================
 // 2. Main Execution
 // ==========================================
@@ -91,7 +80,8 @@ interface ProxyCurLocationMsg {
   const ProxyUrl = new URL(window.__SITEPROXY_PROXY_URL);
   const ProxyRealProtocol = window.__SITEPROXY_REAL_PROTOCOL;
   const ProxyRealHost = window.__SITEPROXY_REAL_HOST;
-  const HideHeader = !!window.__SITEPROXY_HIDE_HEADER;
+  const HIDE_TOP = !!str2int(window.__SITEPROXY_HIDE_TOP);
+  const DEBUG = window.__SITEPROXY_DEBUG;
 
   window.__SITEPROXY_INJECTED = true;
 
@@ -590,7 +580,7 @@ interface ProxyCurLocationMsg {
   // 9. Display Top Navigation Bar (Address Bar)
   // ==========================================
   function showHeader(): void {
-    if (HideHeader || sessionStorage.getItem("siteproxy_navbar_hidden")) {
+    if (HIDE_TOP || sessionStorage.getItem("siteproxy_navbar_hidden")) {
       return;
     }
 
@@ -811,6 +801,7 @@ interface ProxyCurLocationMsg {
             [VAR_PROXY_URL]: ProxyUrl.href,
             [VAR_PROXY_REAL_PROTOCOL]: ProxyRealProtocol,
             [VAR_PROXY_REAL_HOST]: ProxyRealHost,
+            [VAR_PROXY_DEBUG]: DEBUG,
           });
 
           navigator.serviceWorker.register(`/${PREFIX}sw.js?${params.toString()}`).then(
@@ -835,7 +826,7 @@ interface ProxyCurLocationMsg {
   // ==========================================
 
   // Github form submission fix
-  if (window.location.pathname.includes("github.com")) {
+  if (isBaseOrSubHost(ProxyRealHost, "github.com")) {
     setTimeout(() => {
       const form = document.querySelector("form");
       if (form) {
@@ -843,7 +834,7 @@ interface ProxyCurLocationMsg {
           e.preventDefault();
           const target = e.target as HTMLFormElement;
           const action = target.action;
-          const method = target.method || "POST";
+          const method = target.method || METHOD_POST;
           const formData = new FormData(target);
 
           fetch(action, {

@@ -1,9 +1,28 @@
-// Common codes shared by index (backend) / inject / sw
+// Common codes shared by index (backend) / inject / sw.
 
 /**
  * filename / url path prefix for siteproxy
  */
 export const PREFIX = "__siteproxy_";
+
+/**
+ * `__siteproxy_direct__`
+ */
+export const FLAG_DIRECT = PREFIX + "direct__";
+
+/**
+ * `__siteproxy_raw__`
+ */
+export const FLAG_RAW = PREFIX + "raw__";
+
+export const METHOD_GET = "GET";
+export const METHOD_POST = "POST";
+export const METHOD_PUT = "PUT";
+export const METHOD_PATCH = "PATCH";
+export const METHOD_HEAD = "HEAD";
+export const METHOD_TRACE = "TRACE";
+export const NO_REQUEST_BODY_METHODS = [METHOD_GET, METHOD_HEAD, METHOD_TRACE] as const;
+export const WITH_REQUEST_BODY_METHODS = [METHOD_POST, METHOD_PUT, METHOD_PATCH] as const;
 
 // For compatibility, define all headers as full lowercase form.
 export const HEADER_CONTENT_TYPE = "content-type";
@@ -19,7 +38,7 @@ export const HEADER_X_FORWARDED_FOR = "x-forwarded-for";
 export const HEADER_CF_CONNECTING_IP = "cf-connecting-ip";
 export const HEADER_CONTENT_SECURITY_POLICY = "content-security-policy";
 export const HEADER_CONTENT_SECURITY_POLICY_REPORT_ONLY = "content-security-policy-report-only";
-export const HEADER_ACCEPT_ENCODING = "Accept-Encoding";
+export const HEADER_ACCEPT_ENCODING = "accept-encoding";
 export const HEADER_SEC_FETCH_DEST = "sec-fetch-dest";
 export const HEADER_CONTENT_DISPOSITION = "content-disposition";
 export const HEADER_CACHE_CONTROL = "cache-control";
@@ -31,15 +50,24 @@ export const HEADER_SITEPROXY_TARGET_PROTOCOL = "siteproxy-target-protocol";
 export const HEADER_SITEPROXY_TARGET_HOST = "siteproxy-target-host";
 export const HEADER_SITEPROXY_REAL_REFERER = "siteproxy-real-referer";
 export const HEADER_SITEPROXY_NEWREFERER = "siteproxy-newreferer";
+export const HEADER_SITEPROXY_DEST = "siteproxy-dest";
 export const HEADER_SITEPROXY_WINDOW_LOCATION_PATHNAME = "siteproxy-window-location-pathname";
+
+export const FETCH_DEST_DOCUMENT = "document";
+// https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Sec-Fetch-Dest .
+// Note all fetch requests (either by page or service worker) will have "empty" dest value.
+export const HTML_MODIFIABLE_FETCH_DEST_ = ["document", "iframe", "frame", "fencedframe"] as const;
+export const JS_MODIFIABLE_FETCH_DEST = ["script", "worker", "serviceworker", "sharedworker"] as const;
 
 export const CONTENT_DISPOSITION_ATTACHMENT = "attachment";
 export const CACHE_CONTROL_NO_CACHE = "no-cache, no-store, must-revalidate";
 export const CLEAR_SITE_DATA_ALL = `"*"`;
 
+export const VAR_URL = "url";
 export const VAR_PROXY_URL = "proxy_url";
 export const VAR_PROXY_REAL_PROTOCOL = "proxy_real_protocol";
 export const VAR_PROXY_REAL_HOST = "proxy_real_host";
+export const VAR_PROXY_DEBUG = "proxy_debug";
 
 export const HTTPS = "https";
 export const HTTP = "http";
@@ -87,3 +115,57 @@ export function escapeRegExp(str: string): string {
   // $& means the whole matched string
   return (RegExp as any).escape ? (RegExp as any).escape(str) : str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
+
+export function shouldLog(url: string, DEBUG?: string): boolean {
+  if (!DEBUG || DEBUG === "0") {
+    return false;
+  }
+  if (DEBUG === "1" || DEBUG === "*") {
+    return true;
+  }
+  return DEBUG.split(/\s*,\s*/).some((keyword) => url.includes(keyword));
+}
+
+/**
+ * Convert str to int. If str is null / undefined / empty / invalid (NaN), return defaultValue
+ * @param str
+ * @param defaultValue Optional, default is 0 (zero).
+ * @returns
+ */
+export function str2int(str?: string | undefined | null, defaultValue = 0): number {
+  if (!str) {
+    return defaultValue;
+  }
+  const value = parseInt(str);
+  if (isNaN(value)) {
+    return defaultValue;
+  }
+  return value;
+}
+
+/**
+ * Return true if target (e.g. "www.google.com") equals with or is a subdomain of base (e.g. "google.com").
+ */
+export function isBaseOrSubHost(target: string, base: string): boolean {
+  return target === base || target.endsWith("." + base);
+}
+
+// Interface for Service Worker Messages
+export interface ProxyUrlHostMapMsg {
+  type: "PROXY_URL_HOST_MAP";
+  data: {
+    pathname: string;
+    real_protocol: string;
+    real_host: string;
+  };
+}
+
+export interface ProxyCurLocationMsg {
+  type: "PROXY_CUR_LOCATION";
+  data: {
+    protocol: string;
+    host: string;
+  };
+}
+
+export type ProxyMsg = ProxyUrlHostMapMsg | ProxyCurLocationMsg;

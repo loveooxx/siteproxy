@@ -1,9 +1,11 @@
 
 # siteproxy
 
-It's a fork of [netptop/siteproxy](https://github.com/netptop/siteproxy), a online web proxy tool.
-It removes the obfuscation & JavaScript encryption from original project
-and simplify configuration & deployment procedures.
+It's a fork of [netptop/siteproxy](https://github.com/netptop/siteproxy), a online web proxy tool
+which uses service worker to transparently proxify any website.
+It removes code obfuscation & (unnecessary) JavaScript encryption from original project,
+simplifies configuration & deployment procedures, and adds new features.
+It supports deployment in node.js or Cloudflare Workers environment.
 
 - [siteproxy](#siteproxy)
 - [Run \& Deploy](#run--deploy)
@@ -11,6 +13,7 @@ and simplify configuration & deployment procedures.
   - [Run in node.js development environment](#run-in-nodejs-development-environment)
   - [Run in node.js production environment](#run-in-nodejs-production-environment)
   - [Run in Cloudflare Workers local development environment](#run-in-cloudflare-workers-local-development-environment)
+- [Config variables](#config-variables)
 
 # Run & Deploy
 
@@ -22,7 +25,7 @@ Variables and Secrets (runtime):
 
 - `PROXY_URL` : Set to your worker domain origin, with optional path prefix.
 E.g. `https://siteproxy.user.workers.dev` or `https://siteproxy.user.workers.dev/proxy/` .
-- (optional) `HIDE_HEADER` : Set to `1` to hide page header bar.
+- (optional) `HIDE_TOP` : Set to `1` to hide page top bar.
 
 Build config:
 
@@ -45,7 +48,7 @@ Open http://localhost:5006/ in browser.
 
 ## Run in node.js production environment
 
-1. (optional) Set the `PORT` to listening port, default is `5006`.
+1. (optional) Set the `PORT` env to listening port, default is `5006`.
 2. Set the `PROXY_URL` env.
 
 ```
@@ -64,3 +67,20 @@ Open `PROXY_URL` in browser.
 
 Open `PROXY_URL` in browser.
 
+# Config variables
+
+The following config variables are available. Use environment variables (node.js env)
+or (runtime) variables (Cloudflare Workers env) to configure them.
+
+- `PROXY_URL` : Set to server public http url origin, optionally with path prefix.
+  - E.g. `https://siteproxy.workers.dev` or `https://siteproxy.workers.dev/proxy/` .
+  - If not set, it defaults to `http://localhost:<PORT>`, which only works in local environment.
+  - In non-localhost origin service worker requires `https`. You need a https enabled reverse proxy (like nginx or Cloudflare CDN) in node.js env.
+- (Optional) `PORT` : Applies in node.js env only. Http server listening port. Defaults to `5006`.
+- (Optional) `HIDE_TOP` : Set to `1` to hide the top bar in proxified website page.
+- (Optional) `SCRIPT` : The custom JavaScript file url to inject to proxified website page.
+Use `{{domain}}` as placeholder of current website domain. E.g. `https://example.com/{{domain}}.js` .
+- (Optional) `SCRIPT_DOMAINS` : Comma-separated domain list. If set,
+only inject `SCRIPT` if website domain is or ends with any domain of the list.
+- (Optional) `DEBUG` : Flag to enable debug logging to stdout. Set to `1` or `*` to log all;
+Set to comma-separated keyword list to log only if current website url contains any keyword in list.
