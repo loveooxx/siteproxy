@@ -1,6 +1,6 @@
 {
   "$schema": "http://json.schemastore.org/package",
-  "version": "2.5.4-dev",
+  "version": "2.5.4",
   "name": "siteproxy",
   "bin": "index.js",
   "type": "module",

@@ -4,6 +4,8 @@ import { Hono } from "hono";
 import {
   PREFIX,
   FLAG_RAW,
+  HTTP,
+  HTTPS,
   NO_REQUEST_BODY_METHODS,
   HEADER_ACCEPT_ENCODING,
   HEADER_CACHE_CONTROL,
@@ -39,12 +41,9 @@ import {
   CONTENT_ENCODING_DEFLATE,
   CHARSET_UTF8,
   VAR_URL,
-  Marks,
   CharsetAliases,
-  markProto,
   restoreUrl,
   fixInputUrl,
-  escapeRegExp,
   shouldLog,
   isBaseOrSubHost,
   str2int,
@@ -57,7 +56,22 @@ declare global {
   namespace NodeJS {
     interface ProcessEnv {
       PROXY_URL?: string;
+      /**
+       * Optional comma-separated domain whitelist. Also applies to sub-domains of the items in the list.
+       * If not set, any domain is allowed.
+       */
+      WHITELIST?: string;
+      /**
+       * Comma-separated block domain list. Also applies to sub-domains of the items in the list.
+       */
+      BLACKLIST?: string;
+      /**
+       * Http server listen addr. Defaults to "0.0.0.0". Valid in node.js env only.
+       */
       ADDR?: string;
+      /**
+       * Http server listen port. Defaults to 5006. Valid in node.js env only.
+       */
       PORT?: string;
       /**
        * Default (undefined), "" or "0": display top bar in proxified page;
@@ -80,22 +94,58 @@ declare global {
       SCRIPT?: string;
       /**
        * Optional. Comma-separated domain names.
-       * If not empty, only inject custom JavaScript if site domain equals with or ends with any domain of list.
+       * If set, only inject custom JavaScript if site domain exists or is sub-domain of any one in the list.
        */
       SCRIPT_DOMAINS?: string;
     }
   }
 }
 
+type CompressFunc = (data: any, encoding: string) => Promise<any>;
+
+interface BodyModRule {
+  domain?: string;
+  regex: RegExp;
+  replacement: string;
+}
+
+// environment variables / bindings
+interface Bindings {
+  ASSETS: {
+    fetch: typeof fetch;
+  };
+}
+
+// Variables: data shared between middleware
+interface Variables {}
+
+// Combine them into a single Env type
+interface Env {
+  Bindings: Bindings;
+  Variables: Variables;
+}
+
+interface ResponseModOptions {
+  targetUrl: URL;
+  rawReqHeaders: Headers;
+  reqHeaders: Headers;
+  resHeaders: Headers;
+  res: Response;
+  debug: boolean;
+}
+
 const IS_NODE = typeof globalThis.addEventListener === "undefined";
 
 const Port = parseInt(process.env.PORT || "") || 5006;
 const Addr = process.env.ADDR || "0.0.0.0";
-
 const HideTop = !!str2int(process.env.HIDE_TOP);
 const Debug = string2SliceOrFlag(process.env.DEBUG);
 const Script = process.env.SCRIPT || "";
-const ScriptDomains = process.env.SCRIPT_DOMAINS ? process.env.SCRIPT_DOMAINS.split(/\s*,\s*/) : null;
+const ScriptDomains = process.env.SCRIPT_DOMAINS
+  ? new Set(process.env.SCRIPT_DOMAINS.split(/\s*,\s*/).filter(Boolean))
+  : undefined;
+const Blacklist = new Set(process.env.BLACKLIST?.split(/\s*,\s*/).filter(Boolean));
+const Whitelist = process.env.WHITELIST ? new Set(process.env.WHITELIST.split(/\s*,\s*/).filter(Boolean)) : undefined;
 
 if (!process.env.PROXY_URL) {
   process.env.PROXY_URL = `http://localhost${Port !== 80 ? `:${Port}` : ""}/`;
@@ -114,37 +164,43 @@ console.log(`Effective PROXY_URL: ${ProxyUrl.href}`);
 
 const UrlKeywordBlacklist = ["https://web.telegram.org/k/sw-"] as const;
 
-const BodyModHostBlacklist = ["telegram.org", "nga.178.com"] as const;
+const BodyModDomainBlacklist = new Set(["telegram.org", "nga.178.com"]);
 
-type CompressFunc = (data: any, encoding: string) => Promise<any>;
-
-// environment variables / bindings
-type Bindings = {
-  ASSETS: {
-    fetch: typeof fetch;
-  };
-};
-
-// Variables: data shared between middleware
-type Variables = {};
-
-// Combine them into a single Env type
-type Env = {
-  Bindings: Bindings;
-  Variables: Variables;
-};
-
-interface ResponseModOptions {
-  targetUrl: URL;
-  rawReqHeaders: Headers;
-  reqHeaders: Headers;
-  resHeaders: Headers;
-  res: Response;
-  hideTop: boolean;
-  debug: boolean | string[];
-  script: string;
-  scriptDomains: string[] | null;
-}
+const BodyModRules: BodyModRule[] = [
+  {
+    domain: "google.com",
+    regex: /;\w+?\.integrity='sha.+?';/g,
+    replacement: ";",
+  },
+  {
+    regex: /\.URL\b/g,
+    replacement: ".___URL",
+  },
+  {
+    regex: /\bdomain\b/g,
+    replacement: "___domain",
+  },
+  {
+    regex: /\blocation\b/g,
+    replacement: "___location",
+  },
+  {
+    regex: /\bpushState\b/g,
+    replacement: "___pushState",
+  },
+  {
+    regex: /\breplaceState\b/g,
+    replacement: "___replaceState",
+  },
+  {
+    regex: /\bnavigator.serviceWorker\b/g,
+    replacement: "navigator.___serviceWorker",
+  },
+  {
+    regex: /\bdocument.requestStorageAccessFor\b/g,
+    replacement: "document.___requestStorageAccessFor",
+  },
+];
 
 let compressFunc: CompressFunc | undefined;
 
@@ -179,52 +235,38 @@ if (IS_NODE) {
   };
 }
 
-function rewriteSearchQuery(proxyUrl: URL, search: string) {
-  // Replaces absolute proxy URLs in query params back to standard URLs
-  // e.g. ?url=http://proxy/prefix/https/target -> ?url=https://target
-  return search.replace(new RegExp(escapeRegExp(proxyUrl.href) + "(https?)(?:://|/)([^/]+)"), "$1://$2");
+/**
+ * Replace absolute proxy URLs in query params back to real URLs
+ * e.g. "?url=http://proxy/prefix/https://target" -> "?url=https://target"
+ */
+function parseTargetSearch(proxyUrl: URL, searchParams: URLSearchParams): string {
+  const targetSearchParams = new URLSearchParams();
+  for (let [key, value] of searchParams) {
+    if (value.startsWith(ProxyUrl.href + "http")) {
+      value = value.slice(ProxyUrl.href.length);
+    }
+    targetSearchParams.append(key, value);
+  }
+  return (targetSearchParams.size > 0 ? "?" : "") + targetSearchParams.toString();
 }
+
+/**
+ * $1: protocol, http | https; $2: host; $3: pathname.
+ */
+const PathTargetRegex = /^(?:(https?)(?::\/\/|\/))([-a-z0-9A-Z.:]+)(\/.*)?$/;
 
 /**
  * 解析路径，一次性提取协议、主机和真实路径
  * @param pathStr 去除 path prefix 前缀后的 pathname. Supported forms:
  * "https/google.com/search", "https://google.com/search".
- * @param proxyUrl 代理本身的 URL 对象 (用于 CustomPathRewrite 修复逻辑)
  * @returns [protocol, host, realPath]
  */
-function pathname2Target(
-  pathStr: string,
-  proxyUrl: URL
-): [targetProtocol: string, targetHost: string, targetPathname: string] {
-  // group 1: optional protocol, http | https .
-  // group 2: host.
-  // group 3: pathname.
-  const regex = /^(?:(https?)(?::\/\/|\/))([-a-z0-9A-Z.:]+)(\/.*)?$/;
-  const matchResult = pathStr.match(regex);
+function parseTarget(pathStr: string): [protocol: string, host: string, pathname: string] {
+  const matchResult = pathStr.match(PathTargetRegex);
   if (!matchResult) {
     return ["", "", ""];
   }
-  const protocol = matchResult[1];
-  const host = matchResult[2];
-  const realPath = CustomPathRewrite(proxyUrl, matchResult[3] || "/");
-  return [protocol, host, realPath];
-}
-
-/**
- * CustomPathRewrite 函数
- * 用于修复路径中可能存在的畸形代理 URL 拼接，处理重定向或相对路径拼接产生的 "https/" 缺失冒号问题.
- * 将 .../https/www.x.com 变为 .../https://www.x.com .
- */
-function CustomPathRewrite(proxyUrl: URL, path: string): string {
-  for (const mark of Marks) {
-    const checkMark = proxyUrl.href + mark;
-    const markIndex = path.indexOf(checkMark);
-    if (markIndex !== -1) {
-      const afterPrefix = path.slice(markIndex + checkMark.length);
-      return path.slice(0, markIndex) + markProto(mark) + "://" + afterPrefix;
-    }
-  }
-  return path;
+  return [matchResult[1], matchResult[2], matchResult[3]];
 }
 
 /**
@@ -289,26 +331,20 @@ function processHeaders(
   return [reqHeaders, directResponse];
 }
 
-function location_regex_replace(proxyUrl: URL, location: string): string {
-  const rules: Record<string, string> = {
-    "^(http[s]?)://([-a-zA-Z0-9.:]+)": proxyUrl.href + "$1://$2",
-  };
-  for (const regexStr in rules) {
-    const regex = new RegExp(regexStr, "g");
-    location = location.replace(regex, rules[regexStr]);
-  }
-  return location;
-}
-
 /**
  * modify response Location header
  */
 function modLocation(proxyUrl: URL, targetUrl: URL, location: string): string {
-  let newLocation = location_regex_replace(proxyUrl, location);
-  if (newLocation.startsWith("/")) {
-    newLocation = proxyUrl.href + targetUrl.protocol + "//" + targetUrl.host + newLocation;
+  if (location.startsWith("/")) {
+    return proxyUrl.href + targetUrl.origin + location;
   }
-  return newLocation;
+  try {
+    const locationUrl = new URL(location);
+    if (locationUrl.origin !== proxyUrl.origin) {
+      return proxyUrl.href + location;
+    }
+  } catch (e) {}
+  return location;
 }
 
 async function modResponse(proxyUrl: URL, mo: ResponseModOptions): Promise<Response> {
@@ -318,16 +354,13 @@ async function modResponse(proxyUrl: URL, mo: ResponseModOptions): Promise<Respo
     window.__SITEPROXY_PROXY_URL = ${JSON.stringify(proxyUrl.href)};
     window.__SITEPROXY_REAL_PROTOCOL = ${JSON.stringify(mo.targetUrl.protocol.slice(0, -1))};
     window.__SITEPROXY_REAL_HOST = ${JSON.stringify(mo.targetUrl.host)};
-    window.__SITEPROXY_HIDE_TOP = ${JSON.stringify(mo.hideTop)};
-    window.__SITEPROXY_DEBUG = ${JSON.stringify(mo.debug)};
+    window.__SITEPROXY_HIDE_TOP = ${JSON.stringify(HideTop)};
+    window.__SITEPROXY_DEBUG = ${JSON.stringify(Debug)};
   } 
 </script>
 `;
-  if (
-    mo.script &&
-    (!mo.scriptDomains || mo.scriptDomains.some((domain) => isBaseOrSubHost(mo.targetUrl.host, domain)))
-  ) {
-    const script = mo.script.replace("{{domain}}", mo.targetUrl.hostname).replace("{{ts}}", String(Date.now()));
+  if (Script && (!ScriptDomains || allowDomain(mo.targetUrl.hostname, undefined, ScriptDomains))) {
+    const script = Script.replace("{{domain}}", mo.targetUrl.hostname).replace("{{ts}}", String(Date.now()));
     injectHtml += `<script src="${script}"></script>\n`;
   }
   injectHtml += `<script src="/${PREFIX}inject.js"></script>\n`;
@@ -358,62 +391,6 @@ function replaceWindowLocationAssignments(html: string) {
   html = html.replace(/\bwindow\.location\.href\s*=(.*?)/g, "window.___location=$1");
   html = html.replace(/\bwindow\.location\.assign\s*\((.*?)/g, "window.___location.assign($1");
   return html;
-}
-
-const DomainRegexMap = [
-  {
-    domain: "google.com",
-    replacements: [
-      {
-        regex: /;\w+?\.integrity='sha.+?';/,
-        replacement: ";",
-      },
-    ],
-  },
-];
-
-const BodyRegexMap = [
-  {
-    regex: /\.URL\b/,
-    replacement: ".___URL",
-  },
-  {
-    regex: /\bdomain\b/,
-    replacement: "___domain",
-  },
-  {
-    regex: /\blocation\b/,
-    replacement: "___location",
-  },
-  {
-    regex: /\bpushState\b/,
-    replacement: "___pushState",
-  },
-  {
-    regex: /\breplaceState\b/,
-    replacement: "___replaceState",
-  },
-  {
-    regex: /\bnavigator.serviceWorker\b/,
-    replacement: "navigator.___serviceWorker",
-  },
-  {
-    regex: /\bdocument.requestStorageAccessFor\b/,
-    replacement: "document.___requestStorageAccessFor",
-  },
-];
-
-function modifyBody(targetUrl: URL, body: string) {
-  let bodyStr = String(body);
-  // if (typeof body === "string" && body.indexOf("document.URL") !== -1) {}
-  DomainRegexMap.forEach((rule) => {
-    if (isBaseOrSubHost(targetUrl.host, rule.domain)) {
-      rule.replacements.forEach((replacement) => {
-        bodyStr = bodyStr.replace(new RegExp(replacement.regex, "g"), replacement.replacement);
-      });
-    }
-  });
-  return bodyStr;
 }
 
 function invalidCookie(cookie: string): boolean {
@@ -498,7 +475,7 @@ async function modifyContent(
   const isHtml = headerBaseValueIs(contentType, MIME_HTML);
   const isJs = headerBaseValueIs(contentType, MIME_JS) || headerBaseValueIs(contentType, MIME_JS2);
 
-  if (shouldLog(targetUrl.href, mo.debug)) {
+  if (mo.debug) {
     console.log(`mc: url=${targetUrl.href}, dest=${fetchDest}, ce=${contentDisposition}, ct=${contentType}`);
   }
   // 核心修改逻辑：仅针对网页加载的 HTML 和 JS 且状态码正常的请求
@@ -506,29 +483,27 @@ async function modifyContent(
     targetUrl.href.includes(FLAG_RAW) ||
     !fetchDest ||
     isAttachment ||
+    res.status === 204 ||
     res.status >= 500 ||
-    BodyModHostBlacklist.some((host) => isBaseOrSubHost(targetUrl.host, host)) ||
+    !allowDomain(targetUrl.hostname, BodyModDomainBlacklist) ||
     !(
       (isHtml && (HTML_MODIFIABLE_FETCH_DEST_ as readonly string[]).includes(fetchDest)) ||
       (isJs && (JS_MODIFIABLE_FETCH_DEST as readonly string[]).includes(fetchDest))
     )
   ) {
-    if (shouldLog(targetUrl.href, mo.debug)) {
+    if (mo.debug) {
       console.log(`mc: direct return`);
     }
     return finalBody;
   }
 
-  let bodyContent: BodyInit | null = null;
-  let charset = CHARSET_UTF8;
-  let bodyLength = 0;
-  bodyContent = await res.arrayBuffer();
-  bodyLength = bodyContent.byteLength;
-  if (!bodyContent || res.status === 204 || bodyLength < 10) {
+  let bodyContent: BodyInit | null = await res.arrayBuffer();
+  if (!bodyContent || bodyContent.byteLength < 10) {
     return finalBody;
   }
 
   // Charset Detection.
+  let charset = CHARSET_UTF8;
   // fatal = false: decoder will substitute malformed data with a replacement character.
   const utf8Decoder = new TextDecoder(CHARSET_UTF8, { fatal: false });
   const utf8String = utf8Decoder.decode(bodyContent);
@@ -546,17 +521,17 @@ async function modifyContent(
   if ((CharsetAliases as Record<string, string>)[charset]) {
     charset = (CharsetAliases as Record<string, string>)[charset];
   }
-  if (shouldLog(targetUrl.href, mo.debug)) {
+  if (mo.debug) {
     console.log(`mc: detected_charset=${charset}`);
   }
 
-  let decodedBodyString = utf8String;
+  let bodyStr = utf8String;
   if (charset && charset !== CHARSET_UTF8) {
     try {
       const textDecoder = new TextDecoder(charset);
-      decodedBodyString = textDecoder.decode(bodyContent);
+      bodyStr = textDecoder.decode(bodyContent);
     } catch (e) {
-      if (shouldLog(targetUrl.href, mo.debug)) {
+      if (mo.debug) {
         console.log(`mc: invalid charset ${charset}: ${e}, fallback to utf-8`);
       }
     }
@@ -567,10 +542,10 @@ async function modifyContent(
   if (isHtml && charset && charset !== CHARSET_UTF8) {
     // find <head> in raw UTF-8 String.
     const headPattern = "<head.*?>";
-    htmlHeadTagPos = findEndOfPatternInAsciiString(decodedBodyString, headPattern);
+    htmlHeadTagPos = findEndOfPatternInAsciiString(bodyStr, headPattern);
     if (htmlHeadTagPos !== -1) {
       htmlHeadTagPos += 1; // 移动到标签闭合处之后
-      if (shouldLog(targetUrl.href, mo.debug)) {
+      if (mo.debug) {
         console.debug(`mc: headTagPos=${htmlHeadTagPos}`);
       }
       const scriptBuffer = new TextEncoder().encode(injectHtml);
@@ -591,36 +566,35 @@ async function modifyContent(
     }
   }
 
-  // fallback: string concatation.
+  // normal strategy: string concatation.
   if (htmlHeadTagPos === -1) {
-    bodyContent = decodedBodyString;
-
-    // JS 文件特殊处理：重写 window.location 相关赋值
     if (isJs) {
-      bodyContent = replaceWindowLocationAssignments(bodyContent);
+      bodyStr = replaceWindowLocationAssignments(bodyStr);
     }
-    // 全局 Body 替换：将正文中的 URL 替换为代理 URL
-    bodyContent = modifyBody(targetUrl, bodyContent);
-
-    // HTML 注入逻辑
+    BodyModRules.forEach((rule) => {
+      if (rule.domain && !isBaseOrSubHost(targetUrl.host, rule.domain)) {
+        return;
+      }
+      bodyStr = bodyStr.replace(rule.regex, rule.replacement);
+    });
     if (isHtml) {
       // 尝试注入到 <head>, <body> 或 <html> 标签中
-      if (bodyContent.indexOf("<head") !== -1) {
+      if (bodyStr.indexOf("<head") !== -1) {
         // console.log("Debug: Injecting into <head>");
-        bodyContent = bodyContent.replace(/<head(.*?)>/, "<head$1>" + injectHtml);
-      } else if (bodyContent.indexOf("<body") !== -1) {
+        bodyStr = bodyStr.replace(/<head(.*?)>/, "<head$1>" + injectHtml);
+      } else if (bodyStr.indexOf("<body") !== -1) {
         // console.log("Debug: Injecting into <body>");
-        bodyContent = bodyContent.replace(/<body(.*?)>/, "<body$1>" + injectHtml);
-      } else if (bodyContent.indexOf("<html") !== -1) {
+        bodyStr = bodyStr.replace(/<body(.*?)>/, "<body$1>" + injectHtml);
+      } else if (bodyStr.indexOf("<html") !== -1) {
         // console.log("Debug: Injecting into <html>");
-        bodyContent = bodyContent.replace(/<html(.*?)>/, "<html$1>" + injectHtml);
+        bodyStr = bodyStr.replace(/<html(.*?)>/, "<html$1>" + injectHtml);
       } else {
         // console.log("Debug: Falling back to replacing any closing tag");
         // 兜底策略：在任意闭合标签前注入
-        bodyContent = bodyContent.replace(/(<\/[a-zA-Z0-9]+>)/, "$1" + injectHtml);
+        bodyStr = bodyStr.replace(/(<\/[a-zA-Z0-9]+>)/, "$1" + injectHtml);
       }
     }
-    bodyContent = new TextEncoder().encode(bodyContent);
+    bodyContent = new TextEncoder().encode(bodyStr);
     resHeaders.set(HEADER_CONTENT_TYPE, (isHtml ? MIME_HTML : MIME_JS) + "; charset=" + CHARSET_UTF8);
   }
 
@@ -632,7 +606,7 @@ async function modifyContent(
       }
       resHeaders.set(HEADER_CONTENT_ENCODING, CONTENT_ENCODING_GZIP);
     } catch (e) {
-      if (shouldLog(targetUrl.href, mo.debug)) {
+      if (mo.debug) {
         console.log("mc: compression error", e);
       }
     }
@@ -692,10 +666,39 @@ app.get(ProxyUrl.pathname + PREFIX + "api", (ctx) => {
   return ctx.text("invalid", 400);
 });
 
-app.all("*", async (ctx, next, deps = {}) => {
+/**
+ * Say the domain is "foo.bar.com", check "foo.bar.com", "bar.com", "com" in blacklist & whitelist for existence.
+ * At least one of blacklist and whitelist should be provided.
+ * If domain exists in blacklist, return false.
+ * If domain doesn't exist in blacklist, it by default returns true, unless whitelist is provided,
+ * in which case it returns true only if domain exists in whitelist.
+ */
+function allowDomain(domain: string, blacklist?: Set<string>, whitelist?: Set<string>): boolean {
+  let d = domain;
+  while (d) {
+    if (blacklist?.has(d)) {
+      return false;
+    }
+    if (whitelist?.has(d)) {
+      return true;
+    }
+    const dotIndex = d.indexOf(".");
+    if (dotIndex === -1) {
+      break;
+    }
+    d = d.slice(dotIndex + 1);
+  }
+  if (whitelist) {
+    return false;
+  }
+  return true;
+}
+
+app.all("*", async (ctx) => {
   const rawReqHeaders = ctx.req.raw.headers;
   const urlObj = new URL(ctx.req.url);
-  if (shouldLog(ctx.req.url, Debug)) {
+  let debug = shouldLog(ctx.req.url, Debug);
+  if (debug) {
     console.log(`${ctx.req.method} ${ctx.req.url}`, rawReqHeaders);
   }
   let pathAfterToken = "";
@@ -708,16 +711,23 @@ app.all("*", async (ctx, next, deps = {}) => {
     const targetHost = rawReqHeaders.get(HEADER_SITEPROXY_TARGET_HOST) || "";
     pathAfterToken = targetProtocol + "://" + targetHost + urlObj.pathname;
   } else {
-    return next();
+    return ctx.notFound();
   }
-  const [targetProtocol, targetHost, targetPathname] = pathname2Target(pathAfterToken, ProxyUrl);
-  if (targetProtocol !== "http" && targetProtocol !== "https") {
-    return next();
+  const [targetProtocol, targetHost, targetPathname] = parseTarget(pathAfterToken);
+  if (targetProtocol !== HTTP && targetProtocol !== HTTPS) {
+    return ctx.notFound();
   }
-  const targetSearch = rewriteSearchQuery(ProxyUrl, urlObj.search);
+  const targetSearch = parseTargetSearch(ProxyUrl, urlObj.searchParams);
   const targetUrl = new URL(targetProtocol + "://" + targetHost + targetPathname + targetSearch);
-  if (UrlKeywordBlacklist.some((keyword) => targetUrl.href.includes(keyword))) {
-    return next();
+  debug = shouldLog(targetUrl.href, Debug);
+  if (
+    !allowDomain(targetUrl.hostname, Blacklist, Whitelist) ||
+    UrlKeywordBlacklist.some((keyword) => targetUrl.href.includes(keyword))
+  ) {
+    if (debug) {
+      console.log("block", targetUrl.href);
+    }
+    return ctx.notFound();
   }
 
   const [reqHeaders, directResponse] = processHeaders(ProxyUrl, targetUrl, rawReqHeaders);
@@ -727,8 +737,7 @@ app.all("*", async (ctx, next, deps = {}) => {
   const reqBody = !(NO_REQUEST_BODY_METHODS as readonly string[]).includes(ctx.req.method)
     ? await ctx.req.arrayBuffer()
     : undefined;
-
-  if (shouldLog(targetUrl.href, Debug)) {
+  if (debug) {
     console.log("fetch", targetUrl.href, reqHeaders);
   }
   let res = await fetch(targetUrl, {
@@ -748,10 +757,7 @@ app.all("*", async (ctx, next, deps = {}) => {
     reqHeaders,
     resHeaders,
     res,
-    hideTop: HideTop,
-    debug: Debug,
-    script: Script,
-    scriptDomains: ScriptDomains,
+    debug,
   };
   res = await modResponse(ProxyUrl, modificationOptions);
   return res;

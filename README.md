@@ -23,7 +23,7 @@ Fork and connect this project to Cloudflare Workers and configure it as below:
 
 Variables and Secrets (runtime):
 
-- `PROXY_URL` : Set to your worker domain origin, with optional path prefix.
+- `PROXY_URL` : Set to your worker domain origin, optionally with path prefix.
 E.g. `https://siteproxy.user.workers.dev` or `https://siteproxy.user.workers.dev/proxy/` .
 - (optional) `HIDE_TOP` : Set to `1` to hide page top bar.
 
@@ -81,7 +81,9 @@ or (runtime) variables (Cloudflare Workers env) to configure them.
 Use `{{domain}}` as placeholder of current website domain. E.g. `https://example.com/{{domain}}.js` .
 - (Optional) `SCRIPT_DOMAINS` : Comma-separated domain list. If set,
 only inject `SCRIPT` if website domain is or ends with any domain of the list.
-- (Optional) `DEBUG` : Flag to enable debug logging to stdout. Set to `1` or `*` to log all;
+- (Optional) `BLACKLIST` : Comma-separated block domain list. Proxy will return 404 for urls of these domains and their sub-domains.
+- (Optional) `WHITELIST` : Optional comma-separated allow domain list. If provided, only urls of these domains and their sub-domains are allowed.
+- (Optional) `DEBUG` : Flag to enable debug logging to stdout. Set to `1` to log all;
 Set to comma-separated keyword list to log only if current website url contains any keyword in list.
 - (Optional) `PORT` : Valid in node.js env only. Http server listen port. Defaults to `5006`.
 - (Optional) `ADDR` : Valid in node.js env only. Http server listen addr. Defaults to `0.0.0.0`.

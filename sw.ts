@@ -129,7 +129,8 @@ self.addEventListener("activate", (event) => {
 
 // --- 核心逻辑：拦截 Fetch 请求 ---
 self.addEventListener("fetch", (event) => {
-  if (shouldLog(event.request.url, ProxyDebug)) {
+  let debug = shouldLog(event.request.url, ProxyDebug);
+  if (debug) {
     console.log(">> sw fetch", event.request.method, event.request.url);
   }
   event.respondWith(
@@ -146,7 +147,7 @@ self.addEventListener("fetch", (event) => {
           targetUrl.pathname === "/robots.txt" ||
           targetUrl.href.includes(FLAG_DIRECT)
         ) {
-          if (shouldLog(event.request.url, ProxyDebug)) {
+          if (debug) {
             console.log("sw direct fetch");
           }
           return fetch(event.request);
@@ -160,8 +161,8 @@ self.addEventListener("fetch", (event) => {
           }
         }
         if (!targetProtocol) {
-          if (event.request.destination === FETCH_DEST_DOCUMENT) {
-            if (shouldLog(event.request.url, ProxyDebug)) {
+          if (event.request.destination === FETCH_DEST_DOCUMENT && !event.request.referrer) {
+            if (debug) {
               console.log("sw direct document fetch");
             }
             return fetch(event.request);
@@ -185,7 +186,8 @@ self.addEventListener("fetch", (event) => {
       requestHeaders.set(HEADER_SITEPROXY_NEWREFERER, targetReferer);
 
       const finalUrl = ProxyUrl.href + targetProtocol + "://" + targetHost + targetUrl.pathname + searchParams;
-      if (shouldLog(finalUrl, ProxyDebug)) {
+      debug = shouldLog(finalUrl, ProxyDebug);
+      if (debug) {
         console.log(`sw fetch targetUrl=${targetUrl}, proxy_url=${ProxyUrl}, finalUrl=${finalUrl}`);
       }
       const fetchOptions: RequestInit = {
