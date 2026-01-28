@@ -1,55 +1,101 @@
 // Backend main script file for both Cloudflare Workers and node.js env.
 
 import { Hono } from "hono";
-import { env } from "hono/adapter";
 import {
   PREFIX,
   FLAG_RAW,
   NO_REQUEST_BODY_METHODS,
   HEADER_ACCEPT_ENCODING,
   HEADER_CACHE_CONTROL,
-  HEADER_CF_CONNECTING_IP,
   HEADER_CLEAR_SITE_DATA,
   HEADER_CONTENT_DISPOSITION,
   HEADER_CONTENT_ENCODING,
   HEADER_CONTENT_LENGTH,
-  HEADER_CONTENT_SECURITY_POLICY,
-  HEADER_CONTENT_SECURITY_POLICY_REPORT_ONLY,
   HEADER_CONTENT_TYPE,
   HEADER_COOKIE,
   HEADER_HOST,
   HEADER_LOCATION,
   HEADER_REFERER,
   HEADER_ORIGIN,
-  HEADER_PREFIX_SITEPROXY,
   HEADER_SEC_FETCH_DEST,
   HEADER_SET_COOKIE,
   HEADER_SITEPROXY_NEWREFERER,
   HEADER_SITEPROXY_DEST,
-  HEADER_X_FORWARDED_FOR,
-  HEADER_X_FRAME_OPTIONS,
   HEADER_TRANSFER_ENCODING,
   HEADER_SITEPROXY_TARGET_PROTOCOL,
   HEADER_SITEPROXY_TARGET_HOST,
+  HEADERS_REQ_PROXY,
+  HEADERS_RES_SECURITY,
   HTML_MODIFIABLE_FETCH_DEST_,
   JS_MODIFIABLE_FETCH_DEST,
   CONTENT_DISPOSITION_ATTACHMENT,
   CACHE_CONTROL_NO_CACHE,
   CLEAR_SITE_DATA_ALL,
+  MIME_HTML,
+  MIME_JS,
+  MIME_JS2,
+  CONTENT_ENCODING_GZIP,
+  CONTENT_ENCODING_BR,
+  CONTENT_ENCODING_DEFLATE,
+  CHARSET_UTF8,
   VAR_URL,
   Marks,
+  CharsetAliases,
   markProto,
   restoreUrl,
   fixInputUrl,
   escapeRegExp,
   shouldLog,
   isBaseOrSubHost,
+  str2int,
+  string2SliceOrFlag,
+  removeHeaderKeys,
+  headerBaseValueIs,
 } from "./lib";
+
+declare global {
+  namespace NodeJS {
+    interface ProcessEnv {
+      PROXY_URL?: string;
+      ADDR?: string;
+      PORT?: string;
+      /**
+       * Default (undefined), "" or "0": display top bar in proxified page;
+       * "1": hide top bar.
+       */
+      HIDE_TOP?: string;
+      /**
+       * Default (undefined), "" or "0": do not log;
+       * "1" or "*" : log every request;
+       * other vlaue: comma-separated keywords, log if target url contains any keyword in list.
+       */
+      DEBUG?: string;
+      /**
+       * Optional. Inject custom JavaScript file url to html pages. E.g.
+       * "https://example.com/{{domain}}.js" .
+       * Variable placeholders:
+       * - {{domain}} : current website domain. e.g. "google.com" .
+       * - {{ts}} : now unix timestamp in miliseconds.
+       */
+      SCRIPT?: string;
+      /**
+       * Optional. Comma-separated domain names.
+       * If not empty, only inject custom JavaScript if site domain equals with or ends with any domain of list.
+       */
+      SCRIPT_DOMAINS?: string;
+    }
+  }
+}
 
 const IS_NODE = typeof globalThis.addEventListener === "undefined";
 
 const Port = parseInt(process.env.PORT || "") || 5006;
 const Addr = process.env.ADDR || "0.0.0.0";
+
+const HideTop = !!str2int(process.env.HIDE_TOP);
+const Debug = string2SliceOrFlag(process.env.DEBUG);
+const Script = process.env.SCRIPT || "";
+const ScriptDomains = process.env.SCRIPT_DOMAINS ? process.env.SCRIPT_DOMAINS.split(/\s*,\s*/) : null;
 
 if (!process.env.PROXY_URL) {
   process.env.PROXY_URL = `http://localhost${Port !== 80 ? `:${Port}` : ""}/`;
@@ -70,38 +116,10 @@ const UrlKeywordBlacklist = ["https://web.telegram.org/k/sw-"] as const;
 
 const BodyModHostBlacklist = ["telegram.org", "nga.178.com"] as const;
 
-const MIME_HTML = "text/html";
-const MIME_JS = "application/javascript";
-const MIME_JS2 = "text/javascript";
-
 type CompressFunc = (data: any, encoding: string) => Promise<any>;
 
 // environment variables / bindings
 type Bindings = {
-  /**
-   * Default (undefined), "" or "0": display top bar in proxified page;
-   * "1": hide top bar.
-   */
-  HIDE_TOP?: string;
-  /**
-   * Default (undefined), "" or "0": do not log;
-   * "1" or "*" : log every request;
-   * other vlaue: comma-separated keywords, log if target url contains any keyword in list.
-   */
-  DEBUG?: string;
-  /**
-   * Optional. Inject custom JavaScript file url to html pages. E.g.
-   * "https://example.com/{{domain}}.js" .
-   * Variable placeholders:
-   * - {{domain}} : current website domain. e.g. "google.com" .
-   * - {{ts}} : now unix timestamp in miliseconds.
-   */
-  SCRIPT?: string;
-  /**
-   * Optional. Comma-separated domain names.
-   * If not empty, only inject custom JavaScript if site domain equals with or ends with any domain of list.
-   */
-  SCRIPT_DOMAINS?: string;
   ASSETS: {
     fetch: typeof fetch;
   };
@@ -122,10 +140,10 @@ interface ResponseModOptions {
   reqHeaders: Headers;
   resHeaders: Headers;
   res: Response;
-  HIDE_TOP?: string;
-  DEBUG?: string;
-  SCRIPT?: string;
-  SCRIPT_DOMAINS?: string;
+  hideTop: boolean;
+  debug: boolean | string[];
+  script: string;
+  scriptDomains: string[] | null;
 }
 
 let compressFunc: CompressFunc | undefined;
@@ -146,15 +164,12 @@ if (IS_NODE) {
     const compressedData = await new Promise((resolve, reject) => {
       const cb = (err: unknown, result: unknown) => (err ? reject(err) : resolve(result));
       switch (encoding) {
-        case "gzip":
-          // 对应 Content-Encoding: gzip
+        case CONTENT_ENCODING_GZIP:
           return zlib.gzip(data, cb);
-        case "br":
-          // 对应 Content-Encoding: br (Brotli)
+        case CONTENT_ENCODING_BR:
           // Brotli 压缩率更高，但速度较慢，通常用于静态资源
           return zlib.brotliCompress(data, cb);
-        case "deflate":
-          // 对应 Content-Encoding: deflate
+        case CONTENT_ENCODING_DEFLATE:
           return zlib.deflate(data, cb);
         default:
           return reject(`Unsupported compression encoding: ${encoding}`);
@@ -162,19 +177,6 @@ if (IS_NODE) {
     });
     return compressedData;
   };
-}
-
-function removeSiteproxyHeaders(headers: Headers) {
-  const deleteKeys: string[] = [];
-  headers.forEach((value, key) => {
-    key = key.toLowerCase();
-    if (key.startsWith(HEADER_PREFIX_SITEPROXY) || key === HEADER_X_FORWARDED_FOR || key === HEADER_CF_CONNECTING_IP) {
-      deleteKeys.push(key);
-    }
-  });
-  deleteKeys.forEach((key) => {
-    headers.delete(key);
-  });
 }
 
 function rewriteSearchQuery(proxyUrl: URL, search: string) {
@@ -236,8 +238,6 @@ function deleteCookieHeader(name: string) {
 /**
  * 构建真实请求的 Header，处理和清洗请求头。
  * @param {Headers} rawReqHeaders - 原始请求头对象
- * @param {string} targetProtocol - 目标协议 (http/https)
- * @param {string} targetHost - 目标主机 (www.google.com)
  * @returns {Promise<Object>} 处理后的普通对象格式的 Headers
  */
 function processHeaders(
@@ -245,16 +245,10 @@ function processHeaders(
   targetUrl: URL,
   rawReqHeaders: Headers
 ): [reqHeaders: Headers, directResponse?: Response] {
-  const reqHeaders = new Headers();
-  rawReqHeaders.forEach((value, key) => {
-    key = key.toLowerCase();
-    if (key.startsWith(HEADER_PREFIX_SITEPROXY) || key === HEADER_X_FORWARDED_FOR || key === HEADER_CF_CONNECTING_IP) {
-      return;
-    }
-    reqHeaders.append(key, value);
-  });
+  const reqHeaders = new Headers(rawReqHeaders);
+  removeHeaderKeys(reqHeaders, HEADERS_REQ_PROXY);
   reqHeaders.set(HEADER_HOST, targetUrl.host);
-  reqHeaders.set(HEADER_ACCEPT_ENCODING, "gzip");
+  reqHeaders.set(HEADER_ACCEPT_ENCODING, CONTENT_ENCODING_GZIP);
 
   let directResponse: Response | undefined;
   const cookieStr = reqHeaders.get(HEADER_COOKIE);
@@ -263,11 +257,9 @@ function processHeaders(
     // 计算 Cookie 字节长度 (兼容 Node 和 Cloudflare Workers 环境)
     const byteLen = IS_NODE ? Buffer.byteLength(cookieStr) : new TextEncoder().encode(cookieStr).byteLength;
     // 如果 Cookie 超过 8000 字节，可能会导致服务器拒绝服务 (HTTP 431)
-    // 这里的逻辑是：抛出一个特定错误，在外层捕获后，返回 Set-Cookie 指令让浏览器删除这些 Cookie
     if (byteLen > 8000) {
       const cookies = cookieStr.split(";").map((c) => c.trim().split("=", 2));
       const directResponseHeaders = new Headers();
-      // 生成过期指令，清除除了代理自身配置 (proxy_real_) 以外的所有 Cookie
       cookies.forEach(([name]) => {
         directResponseHeaders.append(HEADER_SET_COOKIE, deleteCookieHeader(name));
       });
@@ -283,9 +275,7 @@ function processHeaders(
     try {
       const refUrl = new URL(reqHeaders.get(HEADER_SITEPROXY_NEWREFERER)!);
       reqHeaders.set(HEADER_ORIGIN, refUrl.origin);
-    } catch (e) {
-      // 忽略 URL 解析错误
-    }
+    } catch (e) {}
   } else if (reqHeaders.get(HEADER_REFERER)?.startsWith(proxyUrl.href)) {
     // Restore referer:
     // "https://proxy.com/token/https/www.google.com/foo" => "https/www.google.com/foo"
@@ -325,20 +315,19 @@ async function modResponse(proxyUrl: URL, mo: ResponseModOptions): Promise<Respo
   let injectHtml = `
 <script>
   if (!window.__SITEPROXY_INJECTED) {
-    window.__SITEPROXY_PROXY_URL = '${proxyUrl.href}';
-    window.__SITEPROXY_REAL_PROTOCOL = '${mo.targetUrl.protocol.slice(0, -1)}';
-    window.__SITEPROXY_REAL_HOST = '${mo.targetUrl.host}';
-    window.__SITEPROXY_HIDE_TOP = '${mo.HIDE_TOP || ""}';
-    window.__SITEPROXY_DEBUG = '${mo.DEBUG || ""}';
+    window.__SITEPROXY_PROXY_URL = ${JSON.stringify(proxyUrl.href)};
+    window.__SITEPROXY_REAL_PROTOCOL = ${JSON.stringify(mo.targetUrl.protocol.slice(0, -1))};
+    window.__SITEPROXY_REAL_HOST = ${JSON.stringify(mo.targetUrl.host)};
+    window.__SITEPROXY_HIDE_TOP = ${JSON.stringify(mo.hideTop)};
+    window.__SITEPROXY_DEBUG = ${JSON.stringify(mo.debug)};
   } 
 </script>
 `;
   if (
-    mo.SCRIPT &&
-    (!mo.SCRIPT_DOMAINS ||
-      mo.SCRIPT_DOMAINS.split(/s*,\s*/).some((domain) => isBaseOrSubHost(mo.targetUrl.host, domain)))
+    mo.script &&
+    (!mo.scriptDomains || mo.scriptDomains.some((domain) => isBaseOrSubHost(mo.targetUrl.host, domain)))
   ) {
-    const script = mo.SCRIPT.replace("{{domain}}", mo.targetUrl.hostname).replace("{{ts}}", String(Date.now()));
+    const script = mo.script.replace("{{domain}}", mo.targetUrl.hostname).replace("{{ts}}", String(Date.now()));
     injectHtml += `<script src="${script}"></script>\n`;
   }
   injectHtml += `<script src="/${PREFIX}inject.js"></script>\n`;
@@ -424,11 +413,6 @@ function modifyBody(targetUrl: URL, body: string) {
       });
     }
   });
-  if (!BodyModHostBlacklist.some((host) => isBaseOrSubHost(targetUrl.host, host))) {
-    BodyRegexMap.forEach(({ regex, replacement }) => {
-      bodyStr = bodyStr.replace(new RegExp(regex, "g"), replacement);
-    });
-  }
   return bodyStr;
 }
 
@@ -486,9 +470,7 @@ function handleResponseHeaders(headers: Headers) {
       newHeaders.append(HEADER_SET_COOKIE, newHeader);
     });
   });
-  newHeaders.delete(HEADER_CONTENT_SECURITY_POLICY);
-  newHeaders.delete(HEADER_CONTENT_SECURITY_POLICY_REPORT_ONLY);
-  newHeaders.delete(HEADER_X_FRAME_OPTIONS);
+  removeHeaderKeys(newHeaders, HEADERS_RES_SECURITY);
   return newHeaders;
 }
 
@@ -512,17 +494,11 @@ async function modifyContent(
   const fetchDest = rawReqHeaders.get(HEADER_SITEPROXY_DEST) || rawReqHeaders.get(HEADER_SEC_FETCH_DEST) || "";
   const contentDisposition = res.headers.get(HEADER_CONTENT_DISPOSITION)?.toLowerCase() || "";
   const contentType = res.headers.get(HEADER_CONTENT_TYPE)?.toLowerCase() || "";
-  const isAttachment =
-    contentDisposition === CONTENT_DISPOSITION_ATTACHMENT ||
-    contentDisposition.startsWith(CONTENT_DISPOSITION_ATTACHMENT + ";");
-  const isHtml = contentType === MIME_HTML || contentType.startsWith(MIME_HTML + ";");
-  const isJs =
-    contentType == MIME_JS ||
-    contentType == MIME_JS2 ||
-    contentType.startsWith(MIME_JS + ";") ||
-    contentType.startsWith(MIME_JS2 + ";");
+  const isAttachment = headerBaseValueIs(contentDisposition, CONTENT_DISPOSITION_ATTACHMENT);
+  const isHtml = headerBaseValueIs(contentType, MIME_HTML);
+  const isJs = headerBaseValueIs(contentType, MIME_JS) || headerBaseValueIs(contentType, MIME_JS2);
 
-  if (shouldLog(targetUrl.href, mo.DEBUG)) {
+  if (shouldLog(targetUrl.href, mo.debug)) {
     console.log(`mc: url=${targetUrl.href}, dest=${fetchDest}, ce=${contentDisposition}, ct=${contentType}`);
   }
   // 核心修改逻辑：仅针对网页加载的 HTML 和 JS 且状态码正常的请求
@@ -531,29 +507,33 @@ async function modifyContent(
     !fetchDest ||
     isAttachment ||
     res.status >= 500 ||
+    BodyModHostBlacklist.some((host) => isBaseOrSubHost(targetUrl.host, host)) ||
     !(
       (isHtml && (HTML_MODIFIABLE_FETCH_DEST_ as readonly string[]).includes(fetchDest)) ||
       (isJs && (JS_MODIFIABLE_FETCH_DEST as readonly string[]).includes(fetchDest))
     )
   ) {
+    if (shouldLog(targetUrl.href, mo.debug)) {
+      console.log(`mc: direct return`);
+    }
     return finalBody;
   }
 
   let bodyContent: BodyInit | null = null;
-  let charset = "utf-8";
+  let charset = CHARSET_UTF8;
   let bodyLength = 0;
   bodyContent = await res.arrayBuffer();
   bodyLength = bodyContent.byteLength;
   if (!bodyContent || res.status === 204 || bodyLength < 10) {
     return finalBody;
   }
-  // 字符集检测 (Charset Detection) ---
-  // 为了防止乱码，先用 iso-8859-1 (单字节) 解码，正则搜索 <meta charset="...">
-  const isoDecoder = new TextDecoder("iso-8859-1");
-  const rawString = isoDecoder.decode(bodyContent);
 
+  // Charset Detection.
+  // fatal = false: decoder will substitute malformed data with a replacement character.
+  const utf8Decoder = new TextDecoder(CHARSET_UTF8, { fatal: false });
+  const utf8String = utf8Decoder.decode(bodyContent);
   // 尝试从 meta 标签获取 charset
-  const metaMatch = rawString.match(/<meta\s+[^>]*charset\s*=\s*["']?([0-9a-zA-Z\-]+)["']?[^>]*>/i);
+  const metaMatch = utf8String.match(/<meta\s+[^>]*charset\s*=\s*["']?([0-9a-zA-Z\-]+)["']?[^>]*>/i);
   if (isHtml && metaMatch && metaMatch[1]) {
     charset = metaMatch[1].toLowerCase();
   } else {
@@ -563,112 +543,96 @@ async function modifyContent(
       charset = headerMatch[1].toLowerCase();
     }
   }
-
-  // GBK 特殊处理逻辑：如果转成 UTF-8 字符串再转回来可能会损坏，且处理复杂
-  // 这里采用直接操作 Uint8Array 的方式进行注入
-  const isGbk = contentType.toLowerCase().indexOf("gbk") !== -1;
-  let textDecoder: TextDecoder;
-  try {
-    textDecoder = new TextDecoder(charset);
-  } catch (e) {
-    console.error("Unsupported charset, falling back to utf-8", e);
-    textDecoder = new TextDecoder("utf-8");
+  if ((CharsetAliases as Record<string, string>)[charset]) {
+    charset = (CharsetAliases as Record<string, string>)[charset];
+  }
+  if (shouldLog(targetUrl.href, mo.debug)) {
+    console.log(`mc: detected_charset=${charset}`);
   }
 
-  let decodedBodyString: string;
-  try {
-    decodedBodyString = textDecoder.decode(bodyContent);
-  } catch (e) {
-    console.error("Decoding error occurred: ", e);
-    return bodyContent;
+  let decodedBodyString = utf8String;
+  if (charset && charset !== CHARSET_UTF8) {
+    try {
+      const textDecoder = new TextDecoder(charset);
+      decodedBodyString = textDecoder.decode(bodyContent);
+    } catch (e) {
+      if (shouldLog(targetUrl.href, mo.debug)) {
+        console.log(`mc: invalid charset ${charset}: ${e}, fallback to utf-8`);
+      }
+    }
   }
 
-  let headTagPos = -1;
-  if (isHtml && charset === "gbk") {
-    // 在 rawString (iso-8859-1) 中查找 <head> 标签的位置
+  // If it's non-UTF8 html and head tag found: directly binary concatation. Don't modifyBody。
+  let htmlHeadTagPos = -1;
+  if (isHtml && charset && charset !== CHARSET_UTF8) {
+    // find <head> in raw UTF-8 String.
     const headPattern = "<head.*?>";
-    headTagPos = findEndOfPatternInAsciiString(decodedBodyString, headPattern);
-    if (headTagPos !== -1) {
-      headTagPos += 1; // 移动到标签闭合处之后
+    htmlHeadTagPos = findEndOfPatternInAsciiString(decodedBodyString, headPattern);
+    if (htmlHeadTagPos !== -1) {
+      htmlHeadTagPos += 1; // 移动到标签闭合处之后
+      if (shouldLog(targetUrl.href, mo.debug)) {
+        console.debug(`mc: headTagPos=${htmlHeadTagPos}`);
+      }
+      const scriptBuffer = new TextEncoder().encode(injectHtml);
+
+      const totalLength = bodyContent.byteLength + scriptBuffer.byteLength;
+      const newBuffer = new ArrayBuffer(totalLength);
+      const newUint8 = new Uint8Array(newBuffer);
+
+      const originalUint8 = new Uint8Array(bodyContent);
+      const scriptUint8 = new Uint8Array(scriptBuffer);
+
+      // 拼接: [Header部分] + [注入脚本] + [剩余Body]
+      newUint8.set(originalUint8.subarray(0, htmlHeadTagPos), 0);
+      newUint8.set(scriptUint8, htmlHeadTagPos);
+      newUint8.set(originalUint8.subarray(htmlHeadTagPos), htmlHeadTagPos + scriptUint8.length);
+
+      bodyContent = newBuffer;
     }
   }
 
-  if (shouldLog(targetUrl.href, mo.DEBUG)) {
-    console.debug(`mc: url=${targetUrl.href}, charset=${charset}, ct=${contentType}, headTagPos=${headTagPos}`);
-  }
+  // fallback: string concatation.
+  if (htmlHeadTagPos === -1) {
+    bodyContent = decodedBodyString;
 
-  // [分支 A] GBK 编码且找到了注入位置：直接二进制拼接
-  if (isHtml && charset === "gbk" && headTagPos !== -1) {
-    const encoder = new TextEncoder(); // 注入的脚本默认是 UTF-8，但在现代浏览器混排通常能工作，或者这里假设注入脚本纯 ASCII
-    const scriptBuffer = encoder.encode(injectHtml);
-
-    const totalLength = bodyContent.byteLength + scriptBuffer.byteLength;
-    const newBuffer = new ArrayBuffer(totalLength);
-    const newUint8 = new Uint8Array(newBuffer);
-
-    const originalUint8 = new Uint8Array(bodyContent);
-    const scriptUint8 = new Uint8Array(scriptBuffer);
-
-    // 拼接: [Header部分] + [注入脚本] + [剩余Body]
-    newUint8.set(originalUint8.subarray(0, headTagPos), 0);
-    newUint8.set(scriptUint8, headTagPos);
-    newUint8.set(originalUint8.subarray(headTagPos), headTagPos + scriptUint8.length);
-
-    bodyContent = newBuffer;
-  } else if (!BodyModHostBlacklist.some((host) => isBaseOrSubHost(targetUrl.host, host))) {
-    // [分支 B] 常规编码 (UTF-8等) 且不在排除名单中
-    if (isHtml || isJs) {
-      bodyContent = decodedBodyString;
-
-      // JS 文件特殊处理：重写 window.location 相关赋值
-      if (isJs) {
-        bodyContent = replaceWindowLocationAssignments(bodyContent);
-      }
-
-      // 全局 Body 替换：将正文中的 URL 替换为代理 URL
-      bodyContent = modifyBody(targetUrl, bodyContent);
-
-      // HTML 注入逻辑
-      if (isHtml) {
-        // console.log("content-encoding: " + contentEncoding);
-        // console.log("Debug: Attempting HTML injection - checking for <head>, <body>, <html> tags");
-
-        // 尝试注入到 <head>, <body> 或 <html> 标签中
-        if (bodyContent.indexOf("<head") !== -1) {
-          // console.log("Debug: Injecting into <head>");
-          bodyContent = bodyContent.replace(/<head(.*?)>/, "<head$1>" + injectHtml);
-        } else if (bodyContent.indexOf("<body") !== -1) {
-          // console.log("Debug: Injecting into <body>");
-          bodyContent = bodyContent.replace(/<body(.*?)>/, "<body$1>" + injectHtml);
-        } else if (bodyContent.indexOf("<html") !== -1) {
-          // console.log("Debug: Injecting into <html>");
-          bodyContent = bodyContent.replace(/<html(.*?)>/, "<html$1>" + injectHtml);
-        } else {
-          // console.log("Debug: Falling back to replacing any closing tag");
-          // 兜底策略：在任意闭合标签前注入
-          bodyContent = bodyContent.replace(/(<\/[a-zA-Z0-9]+>)/, "$1" + injectHtml);
-        }
-      }
-
-      // 修改完成后，重新编码回 UTF-8 Buffer
-      const utf8Encoder = new TextEncoder();
-      bodyContent = utf8Encoder.encode(bodyContent);
+    // JS 文件特殊处理：重写 window.location 相关赋值
+    if (isJs) {
+      bodyContent = replaceWindowLocationAssignments(bodyContent);
     }
-  } else {
-    if (shouldLog(targetUrl.href, mo.DEBUG)) {
-      console.debug(`mc: url=${targetUrl.href}, Excluded from body modification`);
+    // 全局 Body 替换：将正文中的 URL 替换为代理 URL
+    bodyContent = modifyBody(targetUrl, bodyContent);
+
+    // HTML 注入逻辑
+    if (isHtml) {
+      // 尝试注入到 <head>, <body> 或 <html> 标签中
+      if (bodyContent.indexOf("<head") !== -1) {
+        // console.log("Debug: Injecting into <head>");
+        bodyContent = bodyContent.replace(/<head(.*?)>/, "<head$1>" + injectHtml);
+      } else if (bodyContent.indexOf("<body") !== -1) {
+        // console.log("Debug: Injecting into <body>");
+        bodyContent = bodyContent.replace(/<body(.*?)>/, "<body$1>" + injectHtml);
+      } else if (bodyContent.indexOf("<html") !== -1) {
+        // console.log("Debug: Injecting into <html>");
+        bodyContent = bodyContent.replace(/<html(.*?)>/, "<html$1>" + injectHtml);
+      } else {
+        // console.log("Debug: Falling back to replacing any closing tag");
+        // 兜底策略：在任意闭合标签前注入
+        bodyContent = bodyContent.replace(/(<\/[a-zA-Z0-9]+>)/, "$1" + injectHtml);
+      }
     }
+    bodyContent = new TextEncoder().encode(bodyContent);
+    resHeaders.set(HEADER_CONTENT_TYPE, (isHtml ? MIME_HTML : MIME_JS) + "; charset=" + CHARSET_UTF8);
   }
 
   if (contentEncoding && compressFunc) {
     try {
-      bodyContent = await compressFunc(bodyContent, "gzip");
+      bodyContent = await compressFunc(bodyContent, CONTENT_ENCODING_GZIP);
       if ((bodyContent as any)?.length) {
         resHeaders.set(HEADER_CONTENT_LENGTH, String((bodyContent as any).length));
       }
-      resHeaders.set(HEADER_CONTENT_ENCODING, "gzip");
+      resHeaders.set(HEADER_CONTENT_ENCODING, CONTENT_ENCODING_GZIP);
     } catch (e) {
-      if (shouldLog(targetUrl.href, mo.DEBUG)) {
+      if (shouldLog(targetUrl.href, mo.debug)) {
         console.log("mc: compression error", e);
       }
     }
@@ -729,11 +693,10 @@ app.get(ProxyUrl.pathname + PREFIX + "api", (ctx) => {
 });
 
 app.all("*", async (ctx, next, deps = {}) => {
-  const { DEBUG, HIDE_TOP, SCRIPT, SCRIPT_DOMAINS } = env<Bindings>(ctx);
   const rawReqHeaders = ctx.req.raw.headers;
   const urlObj = new URL(ctx.req.url);
-  if (shouldLog(ctx.req.url, DEBUG)) {
-    console.log("req", ctx.req.url);
+  if (shouldLog(ctx.req.url, Debug)) {
+    console.log(`${ctx.req.method} ${ctx.req.url}`, rawReqHeaders);
   }
   let pathAfterToken = "";
   if (urlObj.pathname.startsWith(ProxyUrl.pathname) + "http") {
@@ -765,8 +728,8 @@ app.all("*", async (ctx, next, deps = {}) => {
     ? await ctx.req.arrayBuffer()
     : undefined;
 
-  if (shouldLog(targetUrl.href, DEBUG)) {
-    console.log("fetch", targetUrl.href, rawReqHeaders);
+  if (shouldLog(targetUrl.href, Debug)) {
+    console.log("fetch", targetUrl.href, reqHeaders);
   }
   let res = await fetch(targetUrl, {
     method: ctx.req.method,
@@ -785,10 +748,10 @@ app.all("*", async (ctx, next, deps = {}) => {
     reqHeaders,
     resHeaders,
     res,
-    HIDE_TOP,
-    DEBUG,
-    SCRIPT,
-    SCRIPT_DOMAINS,
+    hideTop: HideTop,
+    debug: Debug,
+    script: Script,
+    scriptDomains: ScriptDomains,
   };
   res = await modResponse(ProxyUrl, modificationOptions);
   return res;

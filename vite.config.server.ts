@@ -6,7 +6,7 @@ export default defineConfig({
   build: {
     outDir: ".",
     emptyOutDir: false,
-    minify: false,
+    minify: true,
     rollupOptions: {
       input: resolve(__dirname, "index.ts"),
       external: [...builtinModules, ...builtinModules.map((m) => `node:${m}`)],

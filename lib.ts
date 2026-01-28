@@ -113,6 +113,7 @@ export const HEADER_X_FRAME_OPTIONS = "x-frame-options";
 export const HEADER_LOCATION = "location";
 export const HEADER_HOST = "host";
 export const HEADER_X_FORWARDED_FOR = "x-forwarded-for";
+export const HEADER_X_REAL_IP = "x-real-ip";
 export const HEADER_CF_CONNECTING_IP = "cf-connecting-ip";
 export const HEADER_CONTENT_SECURITY_POLICY = "content-security-policy";
 export const HEADER_CONTENT_SECURITY_POLICY_REPORT_ONLY = "content-security-policy-report-only";
@@ -131,15 +132,57 @@ export const HEADER_SITEPROXY_NEWREFERER = "siteproxy-newreferer";
 export const HEADER_SITEPROXY_DEST = "siteproxy-dest";
 export const HEADER_SITEPROXY_WINDOW_LOCATION_PATHNAME = "siteproxy-window-location-pathname";
 
+/**
+ * Reverse proxy request headers which should be removed when fetching real website.
+ */
+export const HEADERS_REQ_PROXY = [
+  HEADER_PREFIX_SITEPROXY,
+  HEADER_X_FORWARDED_FOR,
+  HEADER_X_REAL_IP,
+  HEADER_CF_CONNECTING_IP,
+] as const;
+
+export const HEADERS_RES_SECURITY = [
+  HEADER_CONTENT_SECURITY_POLICY,
+  HEADER_CONTENT_SECURITY_POLICY_REPORT_ONLY,
+  HEADER_X_FRAME_OPTIONS,
+] as const;
+
 export const FETCH_DEST_DOCUMENT = "document";
 // https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Sec-Fetch-Dest .
 // Note all fetch requests (either by page or service worker) will have "empty" dest value.
 export const HTML_MODIFIABLE_FETCH_DEST_ = ["document", "iframe", "frame", "fencedframe"] as const;
 export const JS_MODIFIABLE_FETCH_DEST = ["script", "worker", "serviceworker", "sharedworker"] as const;
 
+export const CONTENT_ENCODING_GZIP = "gzip";
+export const CONTENT_ENCODING_BR = "br";
+export const CONTENT_ENCODING_DEFLATE = "deflate";
 export const CONTENT_DISPOSITION_ATTACHMENT = "attachment";
 export const CACHE_CONTROL_NO_CACHE = "no-cache, no-store, must-revalidate";
 export const CLEAR_SITE_DATA_ALL = `"*"`;
+
+export const MIME_CAT_PREFIX_TEXT = "text/";
+export const MIME_JSON = "application/json";
+export const MIME_FORM = "application/x-www-form-urlencoded";
+export const MIME_HTML = "text/html";
+export const MIME_JS = "application/javascript";
+export const MIME_JS2 = "text/javascript";
+
+export const CHARSET_UTF8 = "utf-8";
+export const CHARSET_GBK = "gbk";
+export const CHARSET_LATIN1 = "iso-8859-1";
+/**
+ * Russian
+ */
+export const CHARSET_WINDOWS1251 = "windows-1251";
+
+export const CharsetAliases = {
+  cp1251: CHARSET_WINDOWS1251,
+  win1251: CHARSET_WINDOWS1251,
+  windows1251: CHARSET_WINDOWS1251,
+  "x-cp1251": CHARSET_WINDOWS1251,
+  utf8: CHARSET_UTF8,
+} as const;
 
 export const VAR_URL = "url";
 export const VAR_PROXY_URL = "proxy_url";
@@ -194,14 +237,11 @@ export function escapeRegExp(str: string): string {
   return (RegExp as any).escape ? (RegExp as any).escape(str) : str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-export function shouldLog(url: string, DEBUG?: string): boolean {
-  if (!DEBUG || DEBUG === "0") {
-    return false;
+export function shouldLog(url: string, DEBUG: boolean | string[]): boolean {
+  if (typeof DEBUG === "boolean") {
+    return DEBUG;
   }
-  if (DEBUG === "1" || DEBUG === "*") {
-    return true;
-  }
-  return DEBUG.split(/\s*,\s*/).some((keyword) => url.includes(keyword));
+  return DEBUG.some((keyword) => url.includes(keyword));
 }
 
 /**
@@ -247,3 +287,38 @@ export interface ProxyCurLocationMsg {
 }
 
 export type ProxyMsg = ProxyUrlHostMapMsg | ProxyCurLocationMsg;
+
+/**
+ * undefined, null, "" or "0" => false;, "1" => true; Other value => split to array as CSV.
+ */
+export function string2SliceOrFlag(str?: string | null): boolean | string[] {
+  return !str || str === "0" ? false : str === "1" ? true : str.split(/\s*,\s*/);
+}
+
+/**
+ * true => "1"; false => ""; Other value => join(",").
+ */
+export function sliceOrFlag2String(sf: boolean | string[]): string {
+  return sf === true ? "1" : sf === false ? "" : sf.join(",");
+}
+
+/**
+ * Remove removeKeys from headers.
+ * All keys in removeKeys should be full-lowercase; If a key ends with "-", treat it as prefix.
+ */
+export function removeHeaderKeys(headers: Headers, removeKeys: readonly string[]) {
+  headers.forEach((_value, key) => {
+    key = key.toLowerCase();
+    if (removeKeys.some((removeKey) => (removeKey.endsWith("-") ? key.startsWith(removeKey) : key === removeKey))) {
+      headers.delete(key);
+    }
+  });
+}
+
+/**
+ * Return true if a optionally semicolon separated header value (e.g. "text/plain; charset=utf-8")
+ * has a specific baseValue (e.g. "text/plain")
+ */
+export function headerBaseValueIs(value: string, baseValue: string): boolean {
+  return value === baseValue || value.startsWith(baseValue + ";");
+}

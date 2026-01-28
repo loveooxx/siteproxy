@@ -25,8 +25,8 @@ import {
   markProto,
   restoreUrl,
   fixInputUrl,
-  str2int,
   isBaseOrSubHost,
+  sliceOrFlag2String,
 } from "./lib";
 
 // ==========================================
@@ -39,8 +39,8 @@ declare global {
     __SITEPROXY_PROXY_URL: string;
     __SITEPROXY_REAL_PROTOCOL: string;
     __SITEPROXY_REAL_HOST: string;
-    __SITEPROXY_HIDE_TOP: string;
-    __SITEPROXY_DEBUG: string;
+    __SITEPROXY_HIDE_TOP: boolean;
+    __SITEPROXY_DEBUG: boolean | string[];
     ___URL: typeof window.URL;
     ___location: any;
 
@@ -68,9 +68,7 @@ declare global {
   }
 }
 
-// ==========================================
-// 2. Main Execution
-// ==========================================
+const STORAGE_KEY_HIDE_TOP = "siteproxy_hide_top";
 
 (function () {
   if (window.__SITEPROXY_INJECTED) {
@@ -80,8 +78,8 @@ declare global {
   const ProxyUrl = new URL(window.__SITEPROXY_PROXY_URL);
   const ProxyRealProtocol = window.__SITEPROXY_REAL_PROTOCOL;
   const ProxyRealHost = window.__SITEPROXY_REAL_HOST;
-  const HIDE_TOP = !!str2int(window.__SITEPROXY_HIDE_TOP);
-  const DEBUG = window.__SITEPROXY_DEBUG;
+  const HideTop = window.__SITEPROXY_HIDE_TOP;
+  const Debug = window.__SITEPROXY_DEBUG;
 
   window.__SITEPROXY_INJECTED = true;
 
@@ -635,7 +633,7 @@ With the override in place, the flow becomes:
   // 9. Display Top Navigation Bar (Address Bar)
   // ==========================================
   function showHeader(): void {
-    if (HIDE_TOP || sessionStorage.getItem("siteproxy_navbar_hidden")) {
+    if (HideTop || sessionStorage.getItem(STORAGE_KEY_HIDE_TOP)) {
       return;
     }
 
@@ -770,7 +768,7 @@ With the override in place, the flow becomes:
       e.preventDefault();
       bar.style.display = "none";
       if (document.body) document.body.style.marginTop = "0";
-      sessionStorage.setItem("siteproxy_navbar_hidden", "true");
+      sessionStorage.setItem(STORAGE_KEY_HIDE_TOP, "1");
     };
 
     // Assemble
@@ -856,7 +854,7 @@ With the override in place, the flow becomes:
             [VAR_PROXY_URL]: ProxyUrl.href,
             [VAR_PROXY_REAL_PROTOCOL]: ProxyRealProtocol,
             [VAR_PROXY_REAL_HOST]: ProxyRealHost,
-            [VAR_PROXY_DEBUG]: DEBUG,
+            [VAR_PROXY_DEBUG]: sliceOrFlag2String(Debug),
           });
 
           navigator.serviceWorker.register(`/${PREFIX}sw.js?${params.toString()}`).then(

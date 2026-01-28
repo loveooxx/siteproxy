@@ -13,6 +13,9 @@ import {
   HEADER_SITEPROXY_TARGET_PROTOCOL,
   HEADER_SITEPROXY_DEST,
   FETCH_DEST_DOCUMENT,
+  MIME_FORM,
+  MIME_JSON,
+  MIME_CAT_PREFIX_TEXT,
   VAR_PROXY_URL,
   VAR_PROXY_REAL_PROTOCOL,
   VAR_PROXY_REAL_HOST,
@@ -20,29 +23,21 @@ import {
   escapeRegExp,
   restoreUrl,
   shouldLog,
+  string2SliceOrFlag,
+  headerBaseValueIs,
 } from "./lib";
 
 declare const self: ServiceWorkerGlobalScope;
 
-declare global {
-  interface ServiceWorkerGlobalScope {
-    proxy_target_protocol: string;
-    proxy_target_host: string;
-  }
-}
+const Params = new URLSearchParams(location.search);
+const ProxyUrl = new URL(Params.get(VAR_PROXY_URL)!); // Let URL constructor through error if invalid
+const ProxyRealProtocol = Params.get(VAR_PROXY_REAL_PROTOCOL) || "";
+const ProxyRealHost = Params.get(VAR_PROXY_REAL_HOST) || "";
+const ProxyDebug = string2SliceOrFlag(Params.get(VAR_PROXY_DEBUG));
+let ProxyTargetProtocol = "";
+let ProxyTargetHost = "";
 
-const params = new URLSearchParams(location.search);
-
-const proxy_url = params.get(VAR_PROXY_URL);
-if (!proxy_url) {
-  throw new Error("empty proxy_url");
-}
-const ProxyUrl = new URL(proxy_url);
-const proxy_real_protocol = params.get(VAR_PROXY_REAL_PROTOCOL) || "";
-const proxy_real_host = params.get(VAR_PROXY_REAL_HOST) || "";
-const proxy_debug = params.get(VAR_PROXY_DEBUG) || "";
-
-console.log("Service Worker", ProxyUrl.href, proxy_real_protocol, proxy_real_host);
+console.log("Service Worker", ProxyUrl.href, ProxyRealProtocol, ProxyRealHost);
 
 /**
  * Cacha valid time in miniseconds. 30s.
@@ -103,13 +98,16 @@ function rewriteUrlsInContent(content: string) {
 
 // --- Service Worker 消息监听 ---
 self.addEventListener("message", (event) => {
+  if (!event.data) {
+    return;
+  }
   const data: ProxyMsg = event.data;
   if (data.type === "PROXY_CUR_LOCATION") {
     // 更新当前页面的目标协议和主机
     const { protocol, host } = data.data;
-    if (protocol && host && (protocol !== self.proxy_target_protocol || host !== self.proxy_target_host)) {
-      self.proxy_target_protocol = protocol;
-      self.proxy_target_host = host;
+    if (protocol && host && (protocol !== ProxyTargetProtocol || host !== ProxyTargetHost)) {
+      ProxyTargetProtocol = protocol;
+      ProxyTargetHost = host;
     }
   } else if (data.type === "PROXY_URL_HOST_MAP") {
     // 缓存特定路径对应的真实主机信息
@@ -131,8 +129,8 @@ self.addEventListener("activate", (event) => {
 
 // --- 核心逻辑：拦截 Fetch 请求 ---
 self.addEventListener("fetch", (event) => {
-  if (shouldLog(event.request.url, proxy_debug)) {
-    console.log(">> sw fetch", event.request.url);
+  if (shouldLog(event.request.url, ProxyDebug)) {
+    console.log(">> sw fetch", event.request.method, event.request.url);
   }
   event.respondWith(
     (async () => {
@@ -148,8 +146,8 @@ self.addEventListener("fetch", (event) => {
           targetUrl.pathname === "/robots.txt" ||
           targetUrl.href.includes(FLAG_DIRECT)
         ) {
-          if (shouldLog(event.request.url, proxy_debug)) {
-            console.log("sw direct fetch", event.request.url);
+          if (shouldLog(event.request.url, ProxyDebug)) {
+            console.log("sw direct fetch");
           }
           return fetch(event.request);
         }
@@ -163,13 +161,13 @@ self.addEventListener("fetch", (event) => {
         }
         if (!targetProtocol) {
           if (event.request.destination === FETCH_DEST_DOCUMENT) {
-            if (shouldLog(event.request.url, proxy_debug)) {
-              console.log("sw direct document fetch", event.request.url);
+            if (shouldLog(event.request.url, ProxyDebug)) {
+              console.log("sw direct document fetch");
             }
             return fetch(event.request);
           }
-          targetProtocol = self.proxy_target_protocol || proxy_real_protocol;
-          targetHost = self.proxy_target_host || proxy_real_host;
+          targetProtocol = ProxyTargetProtocol || ProxyRealProtocol;
+          targetHost = ProxyTargetHost || ProxyRealHost;
         }
       } else {
         targetProtocol = targetUrl.protocol.slice(0, -1);
@@ -187,8 +185,8 @@ self.addEventListener("fetch", (event) => {
       requestHeaders.set(HEADER_SITEPROXY_NEWREFERER, targetReferer);
 
       const finalUrl = ProxyUrl.href + targetProtocol + "://" + targetHost + targetUrl.pathname + searchParams;
-      if (shouldLog(finalUrl, proxy_debug)) {
-        console.log(`sw fetch requestUrlObj=${targetUrl}, proxy_url=${ProxyUrl}, finalUrl=${finalUrl}`);
+      if (shouldLog(finalUrl, ProxyDebug)) {
+        console.log(`sw fetch targetUrl=${targetUrl}, proxy_url=${ProxyUrl}, finalUrl=${finalUrl}`);
       }
       const fetchOptions: RequestInit = {
         method: event.request.method,
@@ -197,17 +195,19 @@ self.addEventListener("fetch", (event) => {
         credentials: "include", // 包含 Cookie
         redirect: event.request.redirect,
       };
-      // --- 安全逻辑 2: 处理 POST/PUT 请求体 ---
+      // Process request body
       if ((WITH_REQUEST_BODY_METHODS as readonly string[]).includes(event.request.method.toUpperCase())) {
         const clonedRequest = event.request.clone();
-        const contentType = clonedRequest.headers.get(HEADER_CONTENT_TYPE);
-        const contentEncoding = clonedRequest.headers.get(HEADER_CONTENT_ENCODING);
+        const contentType = clonedRequest.headers.get(HEADER_CONTENT_TYPE)?.toLowerCase() || "";
+        const contentEncoding = clonedRequest.headers.get(HEADER_CONTENT_ENCODING)?.toLowerCase() || "";
 
         // 如果是文本类数据 (JSON/Text/Form) 且未被压缩
         if (
           !contentEncoding &&
           contentType &&
-          (contentType.includes("json") || contentType.includes("text") || contentType.includes("form"))
+          (contentType.startsWith(MIME_CAT_PREFIX_TEXT) ||
+            headerBaseValueIs(contentType, MIME_FORM) ||
+            headerBaseValueIs(contentType, MIME_JSON))
         ) {
           let bodyText = await clonedRequest.text();
           // 重写 Body 里的 URL
@@ -218,15 +218,9 @@ self.addEventListener("fetch", (event) => {
           const bodyBuffer = await clonedRequest.arrayBuffer();
           fetchOptions.body = bodyBuffer;
         }
-
-        // 发起请求
-        const newRequest = new Request(finalUrl, fetchOptions);
-        return fetch(newRequest);
-      } else {
-        // GET 等其他请求
-        const newRequest = new Request(finalUrl, fetchOptions);
-        return fetch(newRequest);
       }
+      const newRequest = new Request(finalUrl, fetchOptions);
+      return fetch(newRequest);
     })()
   );
 });
