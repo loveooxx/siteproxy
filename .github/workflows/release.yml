@@ -1,0 +1,71 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
+          - x86_64-pc-windows-gnu
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: "package.json"
+          check-latest: true
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci # clean install
+
+      - name: Build front end project
+        run: npm run build
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cross (via binstall)
+        run: |
+          curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+          cargo binstall cross -y
+
+      - name: Build using Cross
+        run: cross build --target ${{ matrix.target }} --release
+
+      - name: Prepare Asset
+        shell: bash
+        run: |
+          PROJECT_NAME="siteproxy"
+          if [[ "${{ matrix.target }}" == *"windows"* ]]; then
+            BIN_NAME="${PROJECT_NAME}.exe"
+            NEW_NAME="${PROJECT_NAME}-${{ matrix.target }}.exe"
+          else
+            BIN_NAME="${PROJECT_NAME}"
+            NEW_NAME="${PROJECT_NAME}-${{ matrix.target }}"
+          fi
+          BINARY_PATH="target/${{ matrix.target }}/release/${BIN_NAME}"
+
+          mv $BINARY_PATH $NEW_NAME
+          echo "ASSET_PATH=$NEW_NAME" >> $GITHUB_ENV
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: ${{ env.ASSET_PATH }}

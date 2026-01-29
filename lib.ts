@@ -149,10 +149,6 @@ export const HEADERS_RES_SECURITY = [
 ] as const;
 
 export const FETCH_DEST_DOCUMENT = "document";
-// https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Sec-Fetch-Dest .
-// Note all fetch requests (either by page or service worker) will have "empty" dest value.
-export const HTML_MODIFIABLE_FETCH_DEST_ = ["document", "iframe", "frame", "fencedframe"] as const;
-export const JS_MODIFIABLE_FETCH_DEST = ["script", "worker", "serviceworker", "sharedworker"] as const;
 
 export const CONTENT_ENCODING_GZIP = "gzip";
 export const CONTENT_ENCODING_BR = "br";

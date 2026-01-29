@@ -28,8 +28,6 @@ import {
   HEADER_SITEPROXY_TARGET_HOST,
   HEADERS_REQ_PROXY,
   HEADERS_RES_SECURITY,
-  HTML_MODIFIABLE_FETCH_DEST_,
-  JS_MODIFIABLE_FETCH_DEST,
   CONTENT_DISPOSITION_ATTACHMENT,
   CACHE_CONTROL_NO_CACHE,
   CLEAR_SITE_DATA_ALL,
@@ -51,6 +49,9 @@ import {
   removeHeaderKeys,
   headerBaseValueIs,
 } from "./lib";
+import { version as VERSION } from "./package.json";
+
+console.log(`siteproxy v${VERSION}`);
 
 declare global {
   namespace NodeJS {
@@ -133,6 +134,11 @@ interface ResponseModOptions {
   res: Response;
   debug: boolean;
 }
+
+// https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Sec-Fetch-Dest .
+// Note all fetch() requests (either by page or service worker) will have "empty" dest value.
+const HtmlModifiableFetchDest = new Set(["document", "iframe", "frame", "fencedframe"]);
+const JsModifiableFetchDest = new Set(["script", "worker", "serviceworker", "sharedworker"]);
 
 const IS_NODE = typeof globalThis.addEventListener === "undefined";
 
@@ -486,10 +492,7 @@ async function modifyContent(
     res.status === 204 ||
     res.status >= 500 ||
     !allowDomain(targetUrl.hostname, BodyModDomainBlacklist) ||
-    !(
-      (isHtml && (HTML_MODIFIABLE_FETCH_DEST_ as readonly string[]).includes(fetchDest)) ||
-      (isJs && (JS_MODIFIABLE_FETCH_DEST as readonly string[]).includes(fetchDest))
-    )
+    !((isHtml && HtmlModifiableFetchDest.has(fetchDest)) || (isJs && JsModifiableFetchDest.has(fetchDest)))
   ) {
     if (mo.debug) {
       console.log(`mc: direct return`);
@@ -763,14 +766,12 @@ app.all("*", async (ctx) => {
   return res;
 });
 
-// for Cloudflare Workers.
+// In Cloudflare Workers env the exported app is served by Cloudflare Worker directly.
 export default app;
 
-if (IS_NODE) {
+if (IS_NODE && import.meta.main) {
   const { serve } = await import("@hono/node-server");
   serve({ fetch: app.fetch, hostname: Addr, port: Port }, (info) => {
     console.log(`Http server is listening on ${info.address} addr ${info.port} port`);
   });
-} else {
-  // In Cloudflare Workers env the exported app is served by Cloudflare Worker directly.
 }
