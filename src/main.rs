@@ -229,7 +229,7 @@ fn parse_target(path_str: &str) -> (String, String, String) {
 
 async fn serve_asset(uri: Uri) -> impl IntoResponse {
     let path = uri.path().trim_start_matches('/');
-    let path = if path.is_empty() {
+    let path = if path.is_empty() || path.ends_with("/") {
         format!("{}index.html", PREFIX)
     } else {
         path.to_string()
