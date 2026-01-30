@@ -26,7 +26,7 @@ import {
   restoreUrl,
   fixInputUrl,
   isBaseOrSubHost,
-  sliceOrFlag2String,
+  str2int,
 } from "./lib";
 
 // ==========================================
@@ -39,8 +39,8 @@ declare global {
     __SITEPROXY_PROXY_URL: string;
     __SITEPROXY_REAL_PROTOCOL: string;
     __SITEPROXY_REAL_HOST: string;
-    __SITEPROXY_HIDE_TOP: boolean;
-    __SITEPROXY_DEBUG: boolean | string[];
+    __SITEPROXY_HIDE_TOP: string;
+    __SITEPROXY_DEBUG: string;
     ___URL: typeof window.URL;
     ___location: any;
 
@@ -78,8 +78,7 @@ const STORAGE_KEY_HIDE_TOP = "siteproxy_hide_top";
   const ProxyUrl = new URL(window.__SITEPROXY_PROXY_URL);
   const ProxyRealProtocol = window.__SITEPROXY_REAL_PROTOCOL;
   const ProxyRealHost = window.__SITEPROXY_REAL_HOST;
-  const HideTop = window.__SITEPROXY_HIDE_TOP;
-  const Debug = window.__SITEPROXY_DEBUG;
+  const HideTop = !!str2int(window.__SITEPROXY_HIDE_TOP);
 
   window.__SITEPROXY_INJECTED = true;
 
@@ -854,7 +853,7 @@ With the override in place, the flow becomes:
             [VAR_PROXY_URL]: ProxyUrl.href,
             [VAR_PROXY_REAL_PROTOCOL]: ProxyRealProtocol,
             [VAR_PROXY_REAL_HOST]: ProxyRealHost,
-            [VAR_PROXY_DEBUG]: sliceOrFlag2String(Debug),
+            [VAR_PROXY_DEBUG]: window.__SITEPROXY_DEBUG,
           });
 
           navigator.serviceWorker.register(`/${PREFIX}sw.js?${params.toString()}`).then(

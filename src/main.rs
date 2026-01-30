@@ -1,5 +1,5 @@
 // Rust version backend, embed client files.
-const VERSION: &str = "2.5.5-dev";
+const VERSION: &str = "2.5.5";
 
 use axum::{
     body::{Body, Bytes},
@@ -13,7 +13,6 @@ use lazy_static::lazy_static;
 use regex::{Regex, RegexBuilder};
 use reqwest::Client;
 use rust_embed::RustEmbed;
-use serde::Serialize;
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
@@ -36,13 +35,14 @@ const MIME_JS2: &str = "text/javascript";
 const CHARSET_UTF8: &str = "utf-8";
 const CACHE_CONTROL_NO_CACHE: &str = "no-cache, no-store, must-revalidate";
 const CLEAR_SITE_DATA_ALL: &str = r#""*""#;
+const CONTENT_TYPE_HTML: &str = "text/html; charset=utf-8";
+const CONTENT_TYPE_JS: &str = "application/javascript; charset=utf-8";
 
 #[derive(RustEmbed)]
 #[folder = "dist/"]
 struct Assets;
 
-#[derive(Clone, Serialize, Debug)]
-#[serde(untagged)]
+#[derive(Clone, Debug)]
 enum DebugConfig {
     Boolean(bool),
     Keywords(Vec<String>),
@@ -65,7 +65,6 @@ struct AppState {
     whitelist: Option<HashSet<String>>,
     script: Option<String>,
     script_domains: Option<HashSet<String>>,
-    hide_top: bool,
     debug: DebugConfig,
 }
 
@@ -151,10 +150,6 @@ fn parse_debug_config(s: Option<String>) -> DebugConfig {
             }
         }
     }
-}
-
-fn str_to_bool_or_flag(s: Option<String>) -> bool {
-    matches!(s.as_deref(), Some("1"))
 }
 
 fn str_to_set(s: Option<String>) -> Option<HashSet<String>> {
@@ -554,7 +549,6 @@ async fn proxy_handler(
             || is_js && JS_MODIFIABLE_FETCH_DEST.contains(fetch_dest))
         && !fetch_dest.is_empty()
         && !BODY_MOD_DOMAIN_BLACKLIST.contains(target_url.host_str().unwrap_or(""))
-        && status.as_u16() < 500
         && status != StatusCode::NO_CONTENT;
 
     let body_bytes = match res.bytes().await {
@@ -562,7 +556,7 @@ async fn proxy_handler(
         Err(_) => return StatusCode::BAD_GATEWAY.into_response(),
     };
 
-    let final_body = if should_modify {
+    let (final_body, is_utf8) = if should_modify {
         modify_content(
             &state,
             &target_url,
@@ -573,8 +567,19 @@ async fn proxy_handler(
         )
         .await
     } else {
-        body_bytes
+        (body_bytes, false)
     };
+    if is_utf8 {
+        res_headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_str(if is_html {
+                CONTENT_TYPE_HTML
+            } else {
+                CONTENT_TYPE_JS
+            })
+            .unwrap(),
+        );
+    }
 
     let mut builder = Response::builder().status(status);
     let builder_headers = builder.headers_mut().unwrap();
@@ -592,6 +597,10 @@ async fn proxy_handler(
     builder.body(Body::from(final_body)).unwrap()
 }
 
+/**
+Return final body, modified or not,
+and a bool flag which indicates that returned body is rewritten to UTF-8 encoding
+ */
 async fn modify_content(
     state: &AppState,
     target_url: &Url,
@@ -599,13 +608,13 @@ async fn modify_content(
     is_html: bool,
     content_type: &str,
     is_debug_active: bool,
-) -> Bytes {
+) -> (Bytes, bool) {
     if is_debug_active {
         println!("mc: Modifying content for {}", target_url);
     }
 
     if body.len() < 10 {
-        return body;
+        return (body, false);
     }
 
     let mut charset = CHARSET_UTF8;
@@ -636,24 +645,22 @@ async fn modify_content(
 
     let mut body_str = cow.to_string();
 
-    let debug_json = serde_json::to_string(&state.debug).unwrap_or_else(|_| "false".to_string());
-
     let mut inject_html = format!(
         r#"<script>
         if (!window.__SITEPROXY_INJECTED) {{
             window.__SITEPROXY_PROXY_URL = "{}";
             window.__SITEPROXY_REAL_PROTOCOL = "{}";
             window.__SITEPROXY_REAL_HOST = "{}";
-            window.__SITEPROXY_HIDE_TOP = {};
-            window.__SITEPROXY_DEBUG = {}; 
+            window.__SITEPROXY_HIDE_TOP = "{}";
+            window.__SITEPROXY_DEBUG = "{}";
         }} 
         </script>
         "#,
         state.proxy_url,
         target_url.scheme(),
         target_url.host_str().unwrap(),
-        if state.hide_top { "true" } else { "false" },
-        debug_json
+        std::env::var("HIDE_TOP").ok().as_deref().unwrap_or(""),
+        std::env::var("DEBUG").ok().as_deref().unwrap_or("")
     );
 
     if let Some(ref script) = state.script {
@@ -721,7 +728,7 @@ async fn modify_content(
         }
     }
 
-    Bytes::from(body_str)
+    (Bytes::from(body_str), true)
 }
 
 #[tokio::main]
@@ -759,7 +766,6 @@ async fn main() {
         whitelist: str_to_set(std::env::var("WHITELIST").ok()),
         script: std::env::var("SCRIPT").ok(),
         script_domains: str_to_set(std::env::var("SCRIPT_DOMAINS").ok()),
-        hide_top: str_to_bool_or_flag(std::env::var("HIDE_TOP").ok()),
         debug: parse_debug_config(std::env::var("DEBUG").ok()),
     });
 

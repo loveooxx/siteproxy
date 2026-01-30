@@ -38,13 +38,14 @@ import {
   CONTENT_ENCODING_BR,
   CONTENT_ENCODING_DEFLATE,
   CHARSET_UTF8,
+  CONTENT_TYPE_HTML,
+  CONTENT_TYPE_JS,
   VAR_URL,
   CharsetAliases,
   restoreUrl,
   fixInputUrl,
   shouldLog,
   isBaseOrSubHost,
-  str2int,
   string2SliceOrFlag,
   removeHeaderKeys,
   headerBaseValueIs,
@@ -144,7 +145,6 @@ const IS_NODE = typeof globalThis.addEventListener === "undefined";
 
 const Port = parseInt(process.env.PORT || "") || 5006;
 const Addr = process.env.ADDR || "0.0.0.0";
-const HideTop = !!str2int(process.env.HIDE_TOP);
 const Debug = string2SliceOrFlag(process.env.DEBUG);
 const Script = process.env.SCRIPT || "";
 const ScriptDomains = process.env.SCRIPT_DOMAINS
@@ -272,7 +272,7 @@ function parseTarget(pathStr: string): [protocol: string, host: string, pathname
   if (!matchResult) {
     return ["", "", ""];
   }
-  return [matchResult[1], matchResult[2], matchResult[3]];
+  return [matchResult[1] || "", matchResult[2] || "", matchResult[3] || ""];
 }
 
 /**
@@ -357,11 +357,11 @@ async function modResponse(proxyUrl: URL, mo: ResponseModOptions): Promise<Respo
   let injectHtml = `
 <script>
   if (!window.__SITEPROXY_INJECTED) {
-    window.__SITEPROXY_PROXY_URL = ${JSON.stringify(proxyUrl.href)};
-    window.__SITEPROXY_REAL_PROTOCOL = ${JSON.stringify(mo.targetUrl.protocol.slice(0, -1))};
-    window.__SITEPROXY_REAL_HOST = ${JSON.stringify(mo.targetUrl.host)};
-    window.__SITEPROXY_HIDE_TOP = ${JSON.stringify(HideTop)};
-    window.__SITEPROXY_DEBUG = ${JSON.stringify(Debug)};
+    window.__SITEPROXY_PROXY_URL = "${proxyUrl.href}";
+    window.__SITEPROXY_REAL_PROTOCOL = "${mo.targetUrl.protocol.slice(0, -1)}";
+    window.__SITEPROXY_REAL_HOST = "${mo.targetUrl.host}";
+    window.__SITEPROXY_HIDE_TOP = "${process.env.HIDE_TOP || ""}";
+    window.__SITEPROXY_DEBUG = "${process.env.DEBUG || ""}";
   } 
 </script>
 `;
@@ -490,7 +490,6 @@ async function modifyContent(
     !fetchDest ||
     isAttachment ||
     res.status === 204 ||
-    res.status >= 500 ||
     !allowDomain(targetUrl.hostname, BodyModDomainBlacklist) ||
     !((isHtml && HtmlModifiableFetchDest.has(fetchDest)) || (isJs && JsModifiableFetchDest.has(fetchDest)))
   ) {
@@ -598,7 +597,7 @@ async function modifyContent(
       }
     }
     bodyContent = new TextEncoder().encode(bodyStr);
-    resHeaders.set(HEADER_CONTENT_TYPE, (isHtml ? MIME_HTML : MIME_JS) + "; charset=" + CHARSET_UTF8);
+    resHeaders.set(HEADER_CONTENT_TYPE, isHtml ? CONTENT_TYPE_HTML : CONTENT_TYPE_JS);
   }
 
   if (contentEncoding && compressFunc) {

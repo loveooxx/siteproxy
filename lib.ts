@@ -163,6 +163,8 @@ export const MIME_FORM = "application/x-www-form-urlencoded";
 export const MIME_HTML = "text/html";
 export const MIME_JS = "application/javascript";
 export const MIME_JS2 = "text/javascript";
+export const CONTENT_TYPE_HTML = "text/html; charset=utf-8";
+export const CONTENT_TYPE_JS = "application/javascript; charset=utf-8";
 
 export const CHARSET_UTF8 = "utf-8";
 export const CHARSET_GBK = "gbk";
