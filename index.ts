@@ -234,7 +234,7 @@ if (IS_NODE) {
         case CONTENT_ENCODING_DEFLATE:
           return zlib.deflate(data, cb);
         default:
-          return reject(`Unsupported compression encoding: ${encoding}`);
+          return reject(new Error(`Unsupported compression encoding: ${encoding}`));
       }
     });
     return compressedData;
@@ -268,7 +268,7 @@ const PathTargetRegex = /^(?:(https?)(?::\/\/|\/))([-a-z0-9A-Z.:]+)(\/.*)?$/;
  * @returns [protocol, host, realPath]
  */
 function parseTarget(pathStr: string): [protocol: string, host: string, pathname: string] {
-  const matchResult = pathStr.match(PathTargetRegex);
+  const matchResult = PathTargetRegex.exec(pathStr);
   if (!matchResult) {
     return ["", "", ""];
   }
@@ -393,9 +393,9 @@ function findEndOfPatternInAsciiString(str: string, pattern: string) {
 }
 
 function replaceWindowLocationAssignments(html: string) {
-  html = html.replace(/\bwindow\.location\s*=(.*?)/g, "window.___location=$1");
-  html = html.replace(/\bwindow\.location\.href\s*=(.*?)/g, "window.___location=$1");
-  html = html.replace(/\bwindow\.location\.assign\s*\((.*?)/g, "window.___location.assign($1");
+  html = html.replaceAll(/\bwindow\.location\s*=(.*?)/g, "window.___location=$1");
+  html = html.replaceAll(/\bwindow\.location\.href\s*=(.*?)/g, "window.___location=$1");
+  html = html.replaceAll(/\bwindow\.location\.assign\s*\((.*?)/g, "window.___location.assign($1");
   return html;
 }
 
@@ -403,7 +403,7 @@ function invalidCookie(cookie: string): boolean {
   const i = cookie.indexOf(";");
   if (i !== -1) {
     const value = cookie.slice(0, i);
-    if (value.indexOf("=") === -1) {
+    if (value.includes("=")) {
       return true;
     }
   }
@@ -414,14 +414,14 @@ function cookieModify(cookie: string, replaceDomain: string) {
   const expiresRegex = /Expires=/i.test(cookie);
   const maxAgeRegex = /Max-Age=/i.test(cookie);
   let newCookie = cookie
-    .replace(/Domain=[^;]*?(;|$)/gi, "Domain=" + replaceDomain + ";")
-    .replace(/Path=([^;]*?)(;|$)/gi, "Path=/;");
-  newCookie = newCookie.replace(/Max-Age=[^;]*?(;|$)/gi, "");
-  const expiresValueMatch = newCookie.match(/Expires=([^;]*?)(;|$)/i);
+    .replaceAll(/Domain=[^;]*?(;|$)/gi, "Domain=" + replaceDomain + ";")
+    .replaceAll(/Path=([^;]*?)(;|$)/gi, "Path=/;");
+  newCookie = newCookie.replaceAll(/Max-Age=[^;]*?(;|$)/gi, "");
+  const expiresValueMatch = /Expires=([^;]*?)(;|$)/i.exec(newCookie);
   if (expiresValueMatch) {
     const h = expiresValueMatch[1];
     if (new Date(h) < new Date()) {
-      newCookie = newCookie.replace(/Expires=[^;]*?(;|$)/gi, "");
+      newCookie = newCookie.replaceAll(/Expires=[^;]*?(;|$)/gi, "");
       newCookie += "; Max-Age=1800";
     }
   } else if (!expiresRegex && !maxAgeRegex) {
@@ -430,7 +430,7 @@ function cookieModify(cookie: string, replaceDomain: string) {
   if (!/Path=/i.test(newCookie)) {
     newCookie += "; Path=/;";
   }
-  newCookie = newCookie.replace(/; ;|;;/g, ";");
+  newCookie = newCookie.replaceAll(/; ;|;;/g, ";");
   return newCookie;
 }
 
@@ -438,14 +438,14 @@ function handleResponseHeaders(headers: Headers) {
   const newHeaders = new Headers();
   const setCookieHeaders: string[] = [];
   headers.forEach((value, name) => {
-    if (name.toLowerCase() !== HEADER_SET_COOKIE) {
-      newHeaders.set(name, value);
-    } else {
+    if (name.toLowerCase() === HEADER_SET_COOKIE) {
       setCookieHeaders.push(value);
+    } else {
+      newHeaders.set(name, value);
     }
   });
   setCookieHeaders.forEach((setCookieHeader: string) => {
-    setCookieHeader.split(/,(?!(?:\s+[0-9]{2}))/).forEach((str) => {
+    setCookieHeader.split(/,(?!(?:\s+\d{2}))/).forEach((str) => {
       if (invalidCookie(str)) {
         return;
       }
@@ -510,12 +510,12 @@ async function modifyContent(
   const utf8Decoder = new TextDecoder(CHARSET_UTF8, { fatal: false });
   const utf8String = utf8Decoder.decode(bodyContent);
   // 尝试从 meta 标签获取 charset
-  const metaMatch = utf8String.match(/<meta\s+[^>]*charset\s*=\s*["']?([0-9a-zA-Z\-]+)["']?[^>]*>/i);
-  if (isHtml && metaMatch && metaMatch[1]) {
+  const metaMatch = /<meta\s+[^>]*charset\s*=\s*["']?([-0-9a-z]+)["']?[^>]*>/i.exec(utf8String);
+  if (isHtml && metaMatch?.[1]) {
     charset = metaMatch[1].toLowerCase();
   } else {
     // 尝试从 Content-Type Header 获取 charset
-    const headerMatch = contentType.match(/charset=([^;]+)/i);
+    const headerMatch = /charset=([^;]+)/i.exec(contentType);
     if (headerMatch) {
       charset = headerMatch[1].toLowerCase();
     }
@@ -581,17 +581,13 @@ async function modifyContent(
     });
     if (isHtml) {
       // 尝试注入到 <head>, <body> 或 <html> 标签中
-      if (bodyStr.indexOf("<head") !== -1) {
-        // console.log("Debug: Injecting into <head>");
+      if (bodyStr.includes("<head")) {
         bodyStr = bodyStr.replace(/<head(.*?)>/, "<head$1>" + injectHtml);
-      } else if (bodyStr.indexOf("<body") !== -1) {
-        // console.log("Debug: Injecting into <body>");
+      } else if (bodyStr.includes("<body")) {
         bodyStr = bodyStr.replace(/<body(.*?)>/, "<body$1>" + injectHtml);
-      } else if (bodyStr.indexOf("<html") !== -1) {
-        // console.log("Debug: Injecting into <html>");
+      } else if (bodyStr.includes("<html")) {
         bodyStr = bodyStr.replace(/<html(.*?)>/, "<html$1>" + injectHtml);
       } else {
-        // console.log("Debug: Falling back to replacing any closing tag");
         // 兜底策略：在任意闭合标签前注入
         bodyStr = bodyStr.replace(/(<\/[a-zA-Z0-9]+>)/, "$1" + injectHtml);
       }
@@ -625,8 +621,8 @@ const app = new Hono<Env>();
 if (IS_NODE) {
   // serve-static only works in node.js.
   if (!globalThis.__dirname) {
-    const path = await import("path");
-    const { fileURLToPath } = await import("url");
+    const path = await import("node:path");
+    const { fileURLToPath } = await import("node:url");
     // some platform may not support import.meta.url
     globalThis.__dirname = import.meta.url ? path.dirname(fileURLToPath(import.meta.url)) : ".";
   }
@@ -736,9 +732,9 @@ app.all("*", async (ctx) => {
   if (directResponse) {
     return directResponse;
   }
-  const reqBody = !(NO_REQUEST_BODY_METHODS as readonly string[]).includes(ctx.req.method)
-    ? await ctx.req.arrayBuffer()
-    : undefined;
+  const reqBody = (NO_REQUEST_BODY_METHODS as readonly string[]).includes(ctx.req.method)
+    ? undefined
+    : await ctx.req.arrayBuffer();
   if (debug) {
     console.log("fetch", targetUrl.href, reqHeaders);
   }

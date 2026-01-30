@@ -127,7 +127,7 @@ const STORAGE_KEY_HIDE_TOP = "siteproxy_hide_top";
       // but mimics the original script's intent.
       // We use type assertion to bypass TS readonly check here if strictly needed,
       // though typically document.URL cannot be set.
-      // (document as any).URL = proxiedUrl;
+      (document as any).URL = proxiedUrl;
     },
   });
 
@@ -214,14 +214,14 @@ const STORAGE_KEY_HIDE_TOP = "siteproxy_hide_top";
     get hostname(): string {
       const host = getHostFromProxyPrefixedURL(this.originalLocation.href);
       const i = host.indexOf(":");
-      return i !== -1 ? host.slice(0, i) : host;
+      return i === -1 ? host : host.slice(0, i);
     }
     set hostname(val: string) {}
 
     get port(): string {
       const host = getHostFromProxyPrefixedURL(this.originalLocation.href);
       const i = host.indexOf(":");
-      return i !== -1 ? host.slice(i + 1) : "";
+      return i === -1 ? "" : host.slice(i + 1);
     }
     set port(val: string) {}
   }
@@ -337,7 +337,7 @@ const STORAGE_KEY_HIDE_TOP = "siteproxy_hide_top";
   // ==========================================
 
   function getPathnameFromProxyPrefixedURL(url: string): string {
-    if (!url || !url.startsWith(ProxyUrl.href)) {
+    if (!url?.startsWith(ProxyUrl.href)) {
       return "";
     }
     url = url.slice(ProxyUrl.href.length);
@@ -351,7 +351,7 @@ const STORAGE_KEY_HIDE_TOP = "siteproxy_hide_top";
   }
 
   function getHostFromProxyPrefixedURL(url: string): string {
-    if (!url || !url.startsWith(ProxyUrl.href)) {
+    if (!url?.startsWith(ProxyUrl.href)) {
       return "";
     }
     url = url.slice(ProxyUrl.href.length);
@@ -378,7 +378,7 @@ const STORAGE_KEY_HIDE_TOP = "siteproxy_hide_top";
   }
 
   function getProtocolFromProxyPrefixedURL(url: string): string {
-    if (!url || !url.startsWith(ProxyUrl.href)) {
+    if (!url?.startsWith(ProxyUrl.href)) {
       return "";
     }
     url = url.slice(ProxyUrl.href.length);
@@ -541,10 +541,14 @@ With the override in place, the flow becomes:
     observer.disconnect(); // Pause listening to prevent loops
     mutations.forEach((mutation) => {
       switch (mutation.type) {
-        case "attributes":
-          if (!mutation.target || !(mutation.target instanceof Element)) break;
-          const target = mutation.target as Element;
-          if (!mutation.attributeName) break;
+        case "attributes": {
+          if (!mutation.target || !(mutation.target instanceof Element)) {
+            break;
+          }
+          const target = mutation.target;
+          if (!mutation.attributeName) {
+            break;
+          }
 
           const attrValue = target.getAttribute(mutation.attributeName);
           if (attrValue !== null && monitoredAttributes.includes(mutation.attributeName)) {
@@ -560,6 +564,7 @@ With the override in place, the flow becomes:
             }
           }
           break;
+        }
         case "childList":
           mutation.addedNodes.forEach((node) => {
             traverseAndRewriteNode(node);
@@ -803,7 +808,7 @@ With the override in place, the flow becomes:
   // ==========================================
 
   function notifySWUrlMap(pathname: string, realProtocol: string, realHost: string): void {
-    if (window.proxy_worker_registration && window.proxy_worker_registration.active) {
+    if (window.proxy_worker_registration?.active) {
       const msg: ProxyUrlHostMapMsg = {
         type: "PROXY_URL_HOST_MAP",
         data: {
@@ -820,7 +825,7 @@ With the override in place, the flow becomes:
     if (!ProxyRealProtocol || window.self !== window.top) {
       return;
     }
-    if (window.proxy_worker_registration && window.proxy_worker_registration.active) {
+    if (window.proxy_worker_registration?.active) {
       const msg: ProxyCurLocationMsg = {
         type: "PROXY_CUR_LOCATION",
         data: {
@@ -835,7 +840,7 @@ With the override in place, the flow becomes:
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.getRegistrations().then(function (registrations) {
       const isRegistered = registrations.some(function (reg) {
-        const isActive = reg.active && reg.active.scriptURL.includes(PREFIX + "sw.js");
+        const isActive = reg.active?.scriptURL.includes(PREFIX + "sw.js");
         if (isActive) {
           console.log("!!! proxy service worker already registered.");
           window.proxy_worker_registration = reg;
@@ -846,7 +851,7 @@ With the override in place, the flow becomes:
 
       if (!isRegistered) {
         window.addEventListener("load", function () {
-          if (window.proxy_worker_registration && window.proxy_worker_registration.active) {
+          if (window.proxy_worker_registration?.active) {
             return;
           }
           const params = new URLSearchParams({

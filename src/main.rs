@@ -741,13 +741,19 @@ async fn main() {
         .parse()
         .unwrap_or(5006);
     let addr = std::env::var("ADDR").unwrap_or("0.0.0.0".to_string());
-    let proxy_url_str =
-        std::env::var("PROXY_URL").unwrap_or_else(|_| format!("http://localhost:{}/", port));
+    let proxy_url_str = std::env::var("PROXY_URL").unwrap_or_else(|_| {
+        if port != 80 {
+            format!("http://localhost:{}/", port)
+        } else {
+            "http://localhost/".to_string()
+        }
+    });
     let mut proxy_url = Url::parse(&proxy_url_str).expect("Invalid PROXY_URL");
 
-    if proxy_url.path() == "" {
-        proxy_url.set_path("/");
-    }
+    proxy_url.set_fragment(None);
+    proxy_url.set_query(None);
+    proxy_url.set_username("").unwrap();
+    proxy_url.set_password(None).unwrap();
     if !proxy_url.path().ends_with('/') {
         proxy_url.set_path(&format!("{}/", proxy_url.path()));
     }

@@ -160,6 +160,7 @@ export const CLEAR_SITE_DATA_ALL = `"*"`;
 export const MIME_CAT_PREFIX_TEXT = "text/";
 export const MIME_JSON = "application/json";
 export const MIME_FORM = "application/x-www-form-urlencoded";
+export const MIME_MULTIPART_FORM = "multipart/form-data";
 export const MIME_HTML = "text/html";
 export const MIME_JS = "application/javascript";
 export const MIME_JS2 = "text/javascript";
@@ -232,7 +233,7 @@ export function fixInputUrl(url: string | undefined | null): string {
 
 export function escapeRegExp(str: string): string {
   // $& means the whole matched string
-  return (RegExp as any).escape ? (RegExp as any).escape(str) : str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return (RegExp as any).escape ? (RegExp as any).escape(str) : str.replaceAll(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
 }
 
 export function shouldLog(url: string, DEBUG: boolean | string[]): boolean {
@@ -252,8 +253,8 @@ export function str2int(str?: string | undefined | null, defaultValue = 0): numb
   if (!str) {
     return defaultValue;
   }
-  const value = parseInt(str);
-  if (isNaN(value)) {
+  const value = Number.parseInt(str);
+  if (Number.isNaN(value)) {
     return defaultValue;
   }
   return value;
@@ -290,14 +291,26 @@ export type ProxyMsg = ProxyUrlHostMapMsg | ProxyCurLocationMsg;
  * undefined, null, "" or "0" => false;, "1" => true; Other value => split to array as CSV.
  */
 export function string2SliceOrFlag(str?: string | null): boolean | string[] {
-  return !str || str === "0" ? false : str === "1" ? true : str.split(/\s*,\s*/);
+  if (!str || str === "0") {
+    return false;
+  } else if (str === "1") {
+    return true;
+  } else {
+    return str.split(/\s*,\s*/).filter(Boolean);
+  }
 }
 
 /**
  * true => "1"; false => ""; Other value => join(",").
  */
 export function sliceOrFlag2String(sf: boolean | string[]): string {
-  return sf === true ? "1" : sf === false ? "" : sf.join(",");
+  if (sf === true) {
+    return "1";
+  } else if (sf === false) {
+    return "";
+  } else {
+    return sf.join(",");
+  }
 }
 
 /**

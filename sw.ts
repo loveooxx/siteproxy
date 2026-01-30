@@ -15,6 +15,7 @@ import {
   FETCH_DEST_DOCUMENT,
   MIME_FORM,
   MIME_JSON,
+  MIME_MULTIPART_FORM,
   MIME_CAT_PREFIX_TEXT,
   VAR_PROXY_URL,
   VAR_PROXY_REAL_PROTOCOL,
@@ -85,14 +86,14 @@ setInterval(cleanCache, CACHE_CLEAR_INTERVAL);
 function rewriteUrlsInContent(content: string) {
   // 将 "/path_prefix/http/___" 格式的链接还原
   // $1 : protocol; $2: host.
-  content = content.replace(new RegExp(escapeRegExp(ProxyUrl.href) + "(https?)(?:://|/)([^/]+)", "g"), "$1://$2");
+  content = content.replaceAll(new RegExp(escapeRegExp(ProxyUrl.href) + "(https?)(?:://|/)([^/]+)", "g"), "$1://$2");
 
   // 恢复被混淆的 JS 属性
-  content = content.replace(/___location/g, "location");
-  content = content.replace(/___URL/g, "URL");
-  content = content.replace(/___domain/g, "domain");
-  content = content.replace(/navigator.___serviceWorker/g, "navigator.serviceWorker");
-  content = content.replace(/document.___requestStorageAccessFor/g, "document.requestStorageAccessFor");
+  content = content.replaceAll("___location", "location");
+  content = content.replaceAll("___URL", "URL");
+  content = content.replaceAll("___domain", "domain");
+  content = content.replaceAll("navigator.___serviceWorker", "navigator.serviceWorker");
+  content = content.replaceAll("document.___requestStorageAccessFor", "document.requestStorageAccessFor");
   return content;
 }
 
@@ -215,6 +216,18 @@ self.addEventListener("fetch", (event) => {
           // 重写 Body 里的 URL
           bodyText = rewriteUrlsInContent(bodyText);
           fetchOptions.body = bodyText;
+        } else if (headerBaseValueIs(contentType, MIME_MULTIPART_FORM)) {
+          // multipart/form-data 需要特殊处理
+          const formData = await clonedRequest.formData();
+          const newFormData = new FormData();
+          for (const [key, value] of formData.entries()) {
+            if (typeof value === "string") {
+              newFormData.append(key, rewriteUrlsInContent(value));
+            } else {
+              newFormData.append(key, value);
+            }
+          }
+          fetchOptions.body = newFormData;
         } else {
           // 二进制数据直接透传
           const bodyBuffer = await clonedRequest.arrayBuffer();
