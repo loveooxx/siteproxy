@@ -918,10 +918,15 @@ With the override in place, the flow becomes:
     }
   }
 
-  // Expose globals for debugging or SW usage
-  (window as any).siteproxyAttributeChanged = handleMutationCallback;
-  (window as any).removeProxyPrefix = removeProxyPrefix;
-  (window as any).setProtocolFromProxyPrefixedURL = setProtocolFromProxyPrefixedURL;
-  (window as any).traverseAndModifyNode = traverseAndRewriteNode;
-  (window as any).siteproxyRegReplacement = addProxyPrefix;
+  // Expose globals for debugging
+  const debugData: Record<string, any> = {
+    handleMutationCallback,
+    removeProxyPrefix,
+    setProtocolFromProxyPrefixedURL,
+    traverseAndRewriteNode,
+    addProxyPrefix,
+  };
+  for (const [name, value] of Object.entries(debugData)) {
+    (window as any)[PREFIX + name] = value;
+  }
 })();

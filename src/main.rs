@@ -63,6 +63,7 @@ struct AppState {
     proxy_url: Url,
     blacklist: Option<HashSet<String>>,
     whitelist: Option<HashSet<String>>,
+    global_script: Option<String>,
     script: Option<String>,
     script_domains: Option<HashSet<String>>,
     debug: DebugConfig,
@@ -647,15 +648,14 @@ async fn modify_content(
 
     let mut inject_html = format!(
         r#"<script>
-        if (!window.__SITEPROXY_INJECTED) {{
-            window.__SITEPROXY_PROXY_URL = "{}";
-            window.__SITEPROXY_REAL_PROTOCOL = "{}";
-            window.__SITEPROXY_REAL_HOST = "{}";
-            window.__SITEPROXY_HIDE_TOP = "{}";
-            window.__SITEPROXY_DEBUG = "{}";
-        }} 
-        </script>
-        "#,
+if (!window.__SITEPROXY_INJECTED) {{
+  window.__SITEPROXY_PROXY_URL = "{}";
+  window.__SITEPROXY_REAL_PROTOCOL = "{}";
+  window.__SITEPROXY_REAL_HOST = "{}";
+  window.__SITEPROXY_HIDE_TOP = "{}";
+  window.__SITEPROXY_DEBUG = "{}";
+}}
+</script>"#,
         state.proxy_url,
         target_url.scheme(),
         target_url.host_str().unwrap(),
@@ -663,19 +663,42 @@ async fn modify_content(
         std::env::var("DEBUG").ok().as_deref().unwrap_or("")
     );
 
-    if let Some(ref script) = state.script {
-        let allow_script = state.script_domains.as_ref().map_or(true, |wl| {
-            allow_domain(
-                target_url.host_str().unwrap_or(""),
-                &None,
-                &Some(wl.clone()),
-            )
-        });
-        if allow_script {
-            let s_url = script
+    if let Some(ref script) = state.global_script {
+        if !script.is_empty() {
+            let script_str = script
                 .replace("{{domain}}", target_url.host_str().unwrap_or(""))
                 .replace("{{ts}}", &chrono::Utc::now().timestamp_millis().to_string());
-            inject_html.push_str(&format!(r#"<script src="{}"></script>"#, s_url));
+            if script_str.starts_with("https://") || script_str.starts_with("http://") {
+                inject_html.push_str(&format!(r#"<script src="{}"></script>"#, script_str));
+            } else {
+                inject_html.push_str(&format!(
+                    r#"<script>(function(){{{}}})();</script>"#,
+                    script_str
+                ));
+            }
+        }
+    }
+    if let Some(ref script) = state.script {
+        let do_inject = !script.is_empty()
+            && state.script_domains.as_ref().map_or(true, |wl| {
+                allow_domain(
+                    target_url.host_str().unwrap_or(""),
+                    &None,
+                    &Some(wl.clone()),
+                )
+            });
+        if do_inject {
+            let script_str = script
+                .replace("{{domain}}", target_url.host_str().unwrap_or(""))
+                .replace("{{ts}}", &chrono::Utc::now().timestamp_millis().to_string());
+            if script_str.starts_with("https://") || script_str.starts_with("http://") {
+                inject_html.push_str(&format!(r#"<script src="{}"></script>"#, script_str));
+            } else {
+                inject_html.push_str(&format!(
+                    r#"<script>(function(){{{}}})();</script>"#,
+                    script_str
+                ));
+            }
         }
     }
     inject_html.push_str(&format!(r#"<script src="/{}inject.js"></script>"#, PREFIX));
@@ -770,6 +793,7 @@ async fn main() {
         proxy_url,
         blacklist: str_to_set(std::env::var("BLACKLIST").ok()),
         whitelist: str_to_set(std::env::var("WHITELIST").ok()),
+        global_script: std::env::var("GLOBAL_SCRIPT").ok(),
         script: std::env::var("SCRIPT").ok(),
         script_domains: str_to_set(std::env::var("SCRIPT_DOMAINS").ok()),
         debug: parse_debug_config(std::env::var("DEBUG").ok()),

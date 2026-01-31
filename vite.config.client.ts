@@ -1,6 +1,6 @@
+import { resolve } from "node:path";
+import { builtinModules } from "node:module";
 import { defineConfig } from "vite";
-import { resolve } from "path";
-import { builtinModules } from "module";
 import { viteStaticCopy } from "vite-plugin-static-copy";
 import { DEFAULT_SITENAME, PREFIX } from "./lib";
 import { version as VERSION } from "./package.json";

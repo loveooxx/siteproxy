@@ -1,6 +1,6 @@
+import { resolve } from "node:path";
+import { builtinModules } from "node:module";
 import { defineConfig } from "vite";
-import { resolve } from "path";
-import { builtinModules } from "module";
 import { PREFIX } from "./lib";
 
 export default defineConfig({

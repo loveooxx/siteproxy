@@ -88,12 +88,19 @@ declare global {
       DEBUG?: string;
       /**
        * Optional. Inject custom JavaScript file url to html pages. E.g.
+       * "https://example.com/script.js".
+       * It's injected into every html page unconditionally.
+       */
+      GLOBAL_SCRIPT?: string;
+      /**
+       * Optional. Inject custom JavaScript file url to html pages. E.g.
        * "https://example.com/{{domain}}.js" .
        * Variable placeholders:
        * - {{domain}} : current website domain. e.g. "google.com" .
        * - {{ts}} : now unix timestamp in miliseconds.
        */
       SCRIPT?: string;
+
       /**
        * Optional. Comma-separated domain names.
        * If set, only inject custom JavaScript if site domain exists or is sub-domain of any one in the list.
@@ -141,11 +148,12 @@ interface ResponseModOptions {
 const HtmlModifiableFetchDest = new Set(["document", "iframe", "frame", "fencedframe"]);
 const JsModifiableFetchDest = new Set(["script", "worker", "serviceworker", "sharedworker"]);
 
-const IS_NODE = typeof globalThis.addEventListener === "undefined";
+const IS_NODE = globalThis.addEventListener === undefined;
 
-const Port = parseInt(process.env.PORT || "") || 5006;
+const Port = Number.parseInt(process.env.PORT || "") || 5006;
 const Addr = process.env.ADDR || "0.0.0.0";
 const Debug = string2SliceOrFlag(process.env.DEBUG);
+const GlobalScript = process.env.GLOBAL_SCRIPT || "";
 const Script = process.env.SCRIPT || "";
 const ScriptDomains = process.env.SCRIPT_DOMAINS
   ? new Set(process.env.SCRIPT_DOMAINS.split(/\s*,\s*/).filter(Boolean))
@@ -354,22 +362,32 @@ function modLocation(proxyUrl: URL, targetUrl: URL, location: string): string {
 }
 
 async function modResponse(proxyUrl: URL, mo: ResponseModOptions): Promise<Response> {
-  let injectHtml = `
-<script>
-  if (!window.__SITEPROXY_INJECTED) {
-    window.__SITEPROXY_PROXY_URL = "${proxyUrl.href}";
-    window.__SITEPROXY_REAL_PROTOCOL = "${mo.targetUrl.protocol.slice(0, -1)}";
-    window.__SITEPROXY_REAL_HOST = "${mo.targetUrl.host}";
-    window.__SITEPROXY_HIDE_TOP = "${process.env.HIDE_TOP || ""}";
-    window.__SITEPROXY_DEBUG = "${process.env.DEBUG || ""}";
-  } 
-</script>
-`;
+  let injectHtml = `<script>
+if (!window.__SITEPROXY_INJECTED) {
+  window.__SITEPROXY_PROXY_URL = "${proxyUrl.href}";
+  window.__SITEPROXY_REAL_PROTOCOL = "${mo.targetUrl.protocol.slice(0, -1)}";
+  window.__SITEPROXY_REAL_HOST = "${mo.targetUrl.host}";
+  window.__SITEPROXY_HIDE_TOP = "${process.env.HIDE_TOP || ""}";
+  window.__SITEPROXY_DEBUG = "${process.env.DEBUG || ""}";
+}
+</script>`;
+  if (GlobalScript) {
+    const script = GlobalScript.replace("{{domain}}", mo.targetUrl.hostname).replace("{{ts}}", String(Date.now()));
+    if (script.startsWith("https://") || script.startsWith("http://")) {
+      injectHtml += `<script src="${script}"></script>`;
+    } else {
+      injectHtml += `<script>(function(){${script}})();</script>`;
+    }
+  }
   if (Script && (!ScriptDomains || allowDomain(mo.targetUrl.hostname, undefined, ScriptDomains))) {
     const script = Script.replace("{{domain}}", mo.targetUrl.hostname).replace("{{ts}}", String(Date.now()));
-    injectHtml += `<script src="${script}"></script>\n`;
+    if (script.startsWith("https://") || script.startsWith("http://")) {
+      injectHtml += `<script src="${script}"></script>`;
+    } else {
+      injectHtml += `<script>(function(){${script}})();</script>`;
+    }
   }
-  injectHtml += `<script src="/${PREFIX}inject.js"></script>\n`;
+  injectHtml += `<script src="/${PREFIX}inject.js"></script>`;
 
   if ([301, 302, 303, 307, 308].includes(mo.res.status)) {
     const location = mo.resHeaders.get(HEADER_LOCATION);

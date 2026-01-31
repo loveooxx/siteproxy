@@ -83,16 +83,21 @@ or (runtime) "Variables and Secrets" (Cloudflare Workers env) to configure them.
 - `PROXY_URL` : Set to server public http url origin, optionally with path prefix.
   - E.g. `https://siteproxy.workers.dev` or `https://siteproxy.workers.dev/proxy/` .
   - If not set, it defaults to `http://localhost:<PORT>`, which only works in local environment.
-  - In non-localhost origin service worker requires `https`. You need a https enabled reverse proxy, like nginx or TLS provided by Cloudflare.
+  - In non-localhost origin service worker requires `https`. You need a https enabled reverse proxy,
+    like nginx or TLS provided by Cloudflare.
 - (Optional) `HIDE_TOP` : Set to `1` to hide the top bar in proxified website page.
-- (Optional) `SCRIPT` : The custom JavaScript file url to inject to proxified website page.
-Use `{{domain}}` as placeholder of current website domain. E.g. `https://example.com/{{domain}}.js` .
+- (Optional) `SCRIPT` : The custom JavaScript to inject to proxified website page.
+  If it starts with `https://` or `http://` it's treated as a file url, otherwise as script contents.
+  Use `{{domain}}` as placeholder of current website domain. E.g. `https://example.com/{{domain}}.js` .
 - (Optional) `SCRIPT_DOMAINS` : Comma-separated domain list. If set,
-only inject `SCRIPT` if website domain is or ends with any domain of the list.
-- (Optional) `BLACKLIST` : Comma-separated block domain list. Proxy will return 404 for urls of these domains and their sub-domains.
-- (Optional) `WHITELIST` : Optional comma-separated allow domain list. If provided, only urls of these domains and their sub-domains are allowed.
+  only inject `SCRIPT` if website domain is or ends with any domain of the list.
+- (Optional) `GLOBAL_SCRIPT` : Similar to `SCRIPT` env but isn't affected by `SCRIPT_DOMAINS` env.
+- (Optional) `BLACKLIST` : Comma-separated block domain list.
+  Proxy will return 404 for urls of these domains and their sub-domains.
+- (Optional) `WHITELIST` : Optional comma-separated allow domain list.
+  If provided, only urls of these domains and their sub-domains are allowed.
 - (Optional) `DEBUG` : Flag to enable debug logging to stdout. Set to `1` to log all;
-Set to comma-separated keyword list to log only if current website url contains any keyword in list.
+  Set to comma-separated keyword list to log only if current website url contains any keyword in list.
 - (Optional) `PORT` : Http server listen port. Defaults to `5006`. Invalid in Cloudflare Workers env.
 - (Optional) `ADDR` : Http server listen addr. Defaults to `0.0.0.0`. Invalid in Cloudflare Workers env.
 
