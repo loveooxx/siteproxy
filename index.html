@@ -4,84 +4,135 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>%SITENAME%</title>
+    <title>Welcome to nginx!</title>
     <style>
       body {
-        display: flex;
-        justify-content: center;
-        font-family: sans-serif;
-        color: #a89e84;
-        background-color: #fdf6e3;
-        transition: background-color 0.3s, color 0.3s;
+        background-color: #f8f8f8;
+        color: #333;
+        font-family: "Lucida Console", Monaco, monospace;
+        text-align: center;
+        margin: 0;
+        padding: 0;
+        line-height: 1.6;
       }
       .container {
-        width: 80%;
+        max-width: 800px;
+        margin: 60px auto;
+        padding: 20px;
       }
       h1 {
-        display: flex;
-        color: #a89e84;
+        font-size: 28px;
+        color: #2c3e50;
+        margin-bottom: 10px;
+      }
+      .nginx-logo {
+        font-size: 72px;
+        font-weight: bold;
+        color: #009900;
+        margin: 20px 0;
+        letter-spacing: -4px;
       }
       .search-box {
         width: 100%;
-        padding: 10px;
-        margin-bottom: 40px;
-        font-size: 18px;
-        color: #a89e84;
-        border: 2px solid #a89e84;
-        background-color: #f5f5f5;
-        border-radius: 5px;
+        max-width: 620px;
+        padding: 14px 18px;
+        margin: 40px auto;
+        font-size: 17px;
+        color: #333;
+        border: 1px solid #ccc;
+        border-radius: 4px;
+        background-color: #fff;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
         outline: none;
         box-sizing: border-box;
+        font-family: inherit;
       }
-      a {
-        color: #a89e84;
-        text-decoration: none;
+      .search-box:focus {
+        border-color: #009900;
+        box-shadow: 0 0 0 3px rgba(0,153,0,0.1);
       }
-      .warn {
-        color: red;
+      .content {
+        margin: 30px 0;
+        font-size: 15px;
+        color: #555;
       }
       footer {
-        text-align: center;
+        margin-top: 60px;
+        color: #999;
+        font-size: 13px;
+      }
+      a {
+        color: #009900;
+        text-decoration: none;
+      }
+      a:hover {
+        text-decoration: underline;
+      }
+      .warn {
+        color: #d32f2f;
+        font-size: 14px;
+        margin: 20px 0;
+      }
+      .version {
+        color: #999;
+        font-size: 13px;
       }
     </style>
   </head>
   <body>
     <div class="container">
-      <h1>%SITENAME%</h1>
+      <div class="nginx-logo">nginx</div>
+      <h1>Welcome to nginx!</h1>
+      
+      <div class="content">
+        <p>If you see this page, the nginx web server is successfully installed and<br>
+        working. Further configuration is required.</p>
+      </div>
+
       <form id="form" method="get" action="./%PREFIX%api">
         <input type="hidden" name="action" value="go" />
-        <input autofocus type="search" class="search-box" name="url" placeholder="Input the url and press Enter" />
+        <input autofocus type="search" class="search-box" 
+               name="url" 
+               placeholder="Enter URL and press Enter (e.g. example.com)" />
       </form>
-      <noscript><div class="warn">JavaScript is disabled. Some websites may not load normally.</div></noscript>
+
+      <noscript>
+        <div class="warn">JavaScript is disabled. Some websites may not load normally.</div>
+      </noscript>
+
       <footer>
-        v%VERSION%
-        <a href="https://github.com/sagan/siteproxy" rel="noopener noreferrer">Github</a>&nbsp;|
+        <span class="version">v%VERSION%</span><br>
+        <a href="https://github.com/sagan/siteproxy" target="_blank" rel="noopener noreferrer">Powered by siteproxy</a> | 
         <a href="./%PREFIX%api?action=clear" title="Clear cache">Clear cache</a>
       </footer>
     </div>
+
     <script>
       const formEl = document.querySelector("#form");
       const inputEl = formEl.querySelector(`*[name="url"]`);
+      
       formEl.addEventListener("submit", (e) => {
         e.preventDefault();
         let inputText = inputEl.value.trim();
-        if (!inputText) {
-          return;
-        }
+        if (!inputText) return;
+
         if (!inputText.startsWith("http://") && !inputText.startsWith("https://")) {
           inputText = "https://" + inputText;
         }
+
         let url;
         try {
           url = new URL(inputText);
         } catch (e) {
-          alert(`invalid url: ${e}`);
+          alert(`Invalid URL: ${e.message}`);
           return;
         }
+
         if (url.protocol !== "http:" && url.protocol !== "https:") {
-          alert(`invalid url protocol: ${url.protocol}`);
+          alert(`Invalid protocol: ${url.protocol}`);
           return;
         }
+
         location.href = `${location.pathname}${url.protocol}//${url.href.slice(url.protocol.length + 2)}`;
       });
     </script>
