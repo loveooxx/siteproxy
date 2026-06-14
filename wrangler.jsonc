@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "siteproxy",
+  "name": "web",
   "main": "index.ts",
   "compatibility_date": "2026-01-24",
   "compatibility_flags": ["nodejs_compat"],
